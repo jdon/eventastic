@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::Version;
 
-/// An [`Event`] that has been will be / has been persisted to the Event Store.
+/// An [`Event`] that will be / has been persisted to the Event Store.
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct EventStoreEvent<Id, Evt>
 where
