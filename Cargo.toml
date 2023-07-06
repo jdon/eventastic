@@ -1,9 +1,22 @@
 [workspace]
-members = [
-    "eventually",
-    "eventually-macros",
-    "eventually-postgres",
+members = ["eventastic", "eventastic_postgres", "examples/*"]
 
-    # Crates as examples
-    "examples/bank-accounting",
-]
+[workspace.dependencies]
+async-trait = "0.1"
+futures = "0.3"
+serde = { version = "1", features = ["derive"] }
+thiserror = "1"
+sqlx = { version = "0.7", features = [
+	"runtime-tokio-rustls",
+	"postgres",
+	"uuid",
+	"chrono",
+	"json",
+] }
+
+uuid = { version = "1.4", features = ["v4", "serde"] }
+chrono = "0.4"
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+futures-util = "0.3.28"
+anyhow = "1"
