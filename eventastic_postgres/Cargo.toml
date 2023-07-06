@@ -2,9 +2,11 @@
 name = "eventastic_postgres"
 version = "0.1.0"
 edition = "2021"
-readme = "./README.md"
+readme = "../README.md"
 repository = "https://github.com/jdon/eventastic"
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+description = "An example postgres event store for eventastic"
+categories = ["web-programming", "asynchronous"]
+keywords = ["postgres", "postgresql", "database", "ddd", "event-sourcing"]
 
 [dependencies]
 chrono = { workspace = true }
