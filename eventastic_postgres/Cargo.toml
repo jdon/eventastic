@@ -10,7 +10,7 @@ keywords = ["postgres", "postgresql", "database", "ddd", "event-sourcing"]
 
 [dependencies]
 chrono = { workspace = true }
-eventastic = { path = "../eventastic" }
+eventastic = { path = "../eventastic", version = "0.1" }
 sqlx = { workspace = true }
 uuid = { workspace = true }
 serde_json = { workspace = true }
