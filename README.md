@@ -1,6 +1,6 @@
 # Eventastic
 
-This an opinionated fork of [Eventually-rs](https://github.com/get-eventually/eventually-rs).
+This is an opinionated fork of [Eventually-rs](https://github.com/get-eventually/eventually-rs).
 
 Eventastic enforces the use of transactions, handles idempotency and removes command handling abstractions.
 
@@ -71,8 +71,5 @@ See full examples in [examples/bank](https://github.com/jdon/eventastic/blob/mai
     assert_eq!(account.state().balance, 345);
 
     println!("Got account {account:?}");
-
-    transaction.commit().await?;
-
     Ok(())
 ```
