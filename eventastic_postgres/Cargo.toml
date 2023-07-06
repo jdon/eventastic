@@ -2,6 +2,7 @@
 name = "eventastic_postgres"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
 readme = "../README.md"
 repository = "https://github.com/jdon/eventastic"
 description = "An example postgres event store for eventastic"
