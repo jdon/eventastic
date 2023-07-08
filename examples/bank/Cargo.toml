@@ -14,3 +14,4 @@ tokio = { workspace = true }
 sqlx = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
+async-trait = { workspace = true }

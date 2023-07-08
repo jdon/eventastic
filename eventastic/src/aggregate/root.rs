@@ -2,6 +2,7 @@ use std::fmt::Debug;
 
 use super::Snapshot;
 use crate::aggregate::RepositoryTransaction;
+use crate::aggregate::SideEffect;
 use crate::{
     aggregate::Aggregate,
     event::{Event, EventStoreEvent},
@@ -19,6 +20,7 @@ where
     aggregate: T,
     version: Version,
     uncommitted_events: Vec<EventStoreEvent<T::DomainEventId, T::DomainEvent>>,
+    uncommitted_side_effects: Vec<SideEffect<T::SideEffectId, T::SideEffect>>,
 }
 
 impl<T> Context<T>
@@ -49,6 +51,15 @@ where
         std::mem::take(&mut self.uncommitted_events)
     }
 
+    /// Returns the list of uncommitted, recorded [`Aggregate::SideEffect`]s from the [Context]
+    /// and resets the internal list to its default value.
+    #[doc(hidden)]
+    pub fn take_uncommitted_side_effects(
+        &mut self,
+    ) -> Vec<SideEffect<T::SideEffectId, T::SideEffect>> {
+        std::mem::take(&mut self.uncommitted_side_effects)
+    }
+
     /// Creates a new [Context] instance from a Domain [Event]
     /// while rehydrating an [Aggregate].
     ///
@@ -63,6 +74,7 @@ where
             version: event.version,
             aggregate: T::apply_new(&event.event)?,
             uncommitted_events: Vec::default(),
+            uncommitted_side_effects: Vec::default(),
         })
     }
 
@@ -125,6 +137,11 @@ where
 
     pub fn record_new(event: T::DomainEvent) -> Result<Context<T>, T::ApplyError> {
         let aggregate = T::apply_new(&event)?;
+        let mut uncommitted_side_effects = vec![];
+
+        if let Some(mut side_effects) = aggregate.side_effects(&event) {
+            uncommitted_side_effects.append(&mut side_effects);
+        }
 
         let root = Context {
             version: 0,
@@ -134,6 +151,7 @@ where
                 version: 0,
                 event,
             }],
+            uncommitted_side_effects,
         };
 
         Ok(root)
@@ -157,6 +175,10 @@ where
 
         self.aggregate.apply(&event).map_err(RecordError::Apply)?;
         self.version += 1;
+
+        if let Some(mut side_effects) = self.aggregate.side_effects(&event) {
+            self.uncommitted_side_effects.append(&mut side_effects);
+        }
 
         self.uncommitted_events.push(EventStoreEvent {
             id: event.id().clone(),
@@ -199,6 +221,7 @@ where
             aggregate: value.aggregate,
             version: value.version,
             uncommitted_events: Vec::new(),
+            uncommitted_side_effects: Vec::new(),
         }
     }
 }

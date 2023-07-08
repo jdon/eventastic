@@ -4,6 +4,7 @@ members = ["eventastic", "eventastic_postgres", "examples/*"]
 [workspace.dependencies]
 async-trait = "0.1"
 futures = "0.3"
+futures-time = "3"
 serde = { version = "1", features = ["derive"] }
 thiserror = "1"
 sqlx = { version = "0.7", features = [

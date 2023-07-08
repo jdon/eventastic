@@ -34,6 +34,12 @@ mod root;
 pub use repository::{RepositoryTransaction as EventSourcedRepository, *};
 pub use root::*;
 
+#[derive(Debug, Clone)]
+pub struct SideEffect<Id, T> {
+    pub id: Id,
+    pub message: T,
+}
+
 /// An Aggregate represents a Domain Model that, through an Aggregate [Root],
 /// acts as a _transactional boundary_.
 ///
@@ -65,6 +71,17 @@ pub trait Aggregate: Sized + Send + Sync + Clone {
     /// mutating the Aggregate state.
     type ApplyError: Send + Sync + Debug;
 
+    /// The type of side effect that this aggregate can produce.
+    /// Usually, this type should be an `enum`.
+    type SideEffectId: Send + Sync + Clone + Debug + Eq + PartialEq;
+
+    /// The type of side effect that this aggregate can produce.
+    /// Usually, this type should be an `enum`.
+    type SideEffect: Send + Sync + Clone + Debug;
+
+    /// The error type that can be returned when handling a [`Aggregate::SideEffect`]
+    type SideEffectError: Send + Sync + Debug;
+
     /// Returns the unique identifier for the Aggregate instance.
     fn aggregate_id(&self) -> &Self::AggregateId;
 
@@ -83,4 +100,11 @@ pub trait Aggregate: Sized + Send + Sync + Clone {
     /// The method can return an error if the event to apply is unexpected
     /// given the current state of the Aggregate.
     fn apply(&mut self, event: &Self::DomainEvent) -> Result<(), Self::ApplyError>;
+
+    /// Generate a list of side effects for this given aggregate and domain event
+    /// The domain event has already been applied to the aggregate
+    fn side_effects(
+        &self,
+        event: &Self::DomainEvent,
+    ) -> Option<Vec<SideEffect<Self::SideEffectId, Self::SideEffect>>>;
 }

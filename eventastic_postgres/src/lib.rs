@@ -2,6 +2,8 @@ use async_trait::async_trait;
 use chrono::DateTime;
 use chrono::Utc;
 use eventastic::aggregate::Aggregate;
+use eventastic::aggregate::OutBoxHandler;
+use eventastic::aggregate::OutBoxMessage;
 use eventastic::aggregate::Repository;
 use eventastic::aggregate::RepositoryTransaction;
 use eventastic::aggregate::Snapshot;
@@ -18,7 +20,9 @@ use sqlx::{
     postgres::{PgConnectOptions, PgPoolOptions},
     Pool, Postgres, Transaction,
 };
+use thiserror::Error;
 use uuid::Uuid;
+
 pub struct PostgresRepository {
     inner: Pool<Postgres>,
 }
@@ -37,6 +41,21 @@ impl PostgresRepository {
         Ok(PostgresTransaction {
             inner: self.inner.begin().await?,
         })
+    }
+}
+
+#[async_trait]
+impl<'a, T> Repository<'a, T, PostgresTransaction<'a>> for PostgresRepository
+where
+    T: Aggregate<AggregateId = Uuid, DomainEventId = Uuid, SideEffectId = Uuid> + 'a,
+    <T as Aggregate>::DomainEvent: Serialize,
+    T::DomainEvent: DeserializeOwned + Serialize,
+    T::SideEffect: DeserializeOwned + Serialize,
+{
+    type DbError = DbError;
+
+    async fn begin_transaction(&'a self) -> Result<PostgresTransaction<'a>, Self::DbError> {
+        Ok(self.transaction().await?)
     }
 }
 
@@ -65,6 +84,16 @@ struct FullEventRow {
     created_at: DateTime<Utc>,
 }
 
+#[derive(Debug, sqlx::FromRow)]
+struct OutBoxRow {
+    id: Uuid,
+    message: JsonValue,
+    retries: i64,
+    requeue: bool,
+    #[allow(dead_code)]
+    created_at: DateTime<Utc>,
+}
+
 #[derive(sqlx::FromRow)]
 struct PartialSnapShotRow {
     snapshot: serde_json::Value,
@@ -73,7 +102,7 @@ struct PartialSnapShotRow {
 impl PartialEventRow {
     fn to_event<Evt>(
         row: PartialEventRow,
-    ) -> Result<eventastic::event::EventStoreEvent<Uuid, Evt>, sqlx::Error>
+    ) -> Result<eventastic::event::EventStoreEvent<Uuid, Evt>, DbError>
     where
         Evt: Send + Sync + Clone + Eq,
         for<'de> Evt: serde::Deserialize<'de>,
@@ -82,7 +111,7 @@ impl PartialEventRow {
             match row.version.try_into() {
                 Ok(i) => i,
                 Err(e) => {
-                    return Err(sqlx::Error::Decode(Box::new(e)));
+                    return Err(DbError::DbError(sqlx::Error::Decode(Box::new(e))));
                 }
             }
         };
@@ -93,33 +122,90 @@ impl PartialEventRow {
                 event: e,
                 version,
             }),
-            Err(e) => Err(sqlx::Error::Decode(Box::new(e))),
+            Err(e) => Err(DbError::SerializationError(e)),
         }
     }
 }
 
-#[async_trait]
-impl<'a, T> Repository<'a, T, PostgresTransaction<'a>> for PostgresRepository
-where
-    T: Aggregate<AggregateId = Uuid, DomainEventId = Uuid> + 'a,
-    <T as Aggregate>::DomainEvent: Serialize,
-    for<'de> <T as Aggregate>::DomainEvent: serde::Deserialize<'de>,
-{
-    type DbError = sqlx::Error;
+#[derive(Error, Debug)]
+pub enum DbError {
+    #[error("DB Error {0}")]
+    DbError(#[from] sqlx::Error),
+    #[error("Serialization Error {0}")]
+    SerializationError(#[source] serde_json::Error),
+}
 
-    async fn begin(&'a self) -> Result<PostgresTransaction<'a>, Self::DbError> {
-        self.transaction().await
+#[async_trait]
+impl<'a, T> OutBoxHandler<Uuid, T> for PostgresTransaction<'a>
+where
+    T: Send,
+{
+    type OutBoxDbError = DbError;
+
+    async fn get_outbox_items(&mut self) -> Result<Vec<OutBoxMessage<Uuid, T>>, Self::OutBoxDbError>
+    where
+        T: DeserializeOwned,
+    {
+        let messages = sqlx::query_as!(
+            OutBoxRow,
+            "SELECT * from outbox WHERE requeue = true ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 10 "
+        )
+        .fetch_all(&mut *self.inner)
+        .await?;
+
+        messages
+            .into_iter()
+            .map(|m| {
+                let message =
+                    serde_json::from_value(m.message).map_err(DbError::SerializationError)?;
+                Ok(OutBoxMessage::new(m.id, message, m.retries as _, m.requeue))
+            })
+            .collect::<Result<Vec<_>, _>>()
+    }
+
+    /// Delete an item from the outbox.
+    #[doc(hidden)]
+    async fn delete_outbox_item(&mut self, outbox_id: Uuid) -> Result<(), Self::OutBoxDbError> {
+        let _ = sqlx::query!("DELETE FROM outbox where id = $1", outbox_id)
+            .execute(&mut *self.inner)
+            .await?;
+        Ok(())
+    }
+
+    /// Insert or update an outbox item into the repository.
+    #[doc(hidden)]
+    async fn upsert_outbox_item(
+        &mut self,
+        outbox_item: OutBoxMessage<Uuid, T>,
+    ) -> Result<(), Self::OutBoxDbError>
+    where
+        T: Serialize + 'async_trait,
+    {
+        let retires = outbox_item.retries() as i32;
+        let json_value =
+            serde_json::to_value(outbox_item.message).map_err(DbError::SerializationError)?;
+        sqlx::query!(
+            "INSERT INTO outbox(id, message, retries, requeue, created_at) VALUES ($1, $2, $3, $4, $5) ON CONFLICT ON CONSTRAINT outbox_pkey DO UPDATE set retries = $3, requeue = $4",
+            outbox_item.id,
+            json_value,
+            retires,
+            outbox_item.requeue,
+            Utc::now()
+        )
+        .execute(&mut *self.inner)
+        .await?;
+        Ok(())
     }
 }
 
 #[async_trait]
 impl<'a, T> RepositoryTransaction<'a, T> for PostgresTransaction<'a>
 where
-    T: Aggregate<AggregateId = Uuid, DomainEventId = Uuid> + 'a,
+    T: Aggregate<AggregateId = Uuid, DomainEventId = Uuid, SideEffectId = Uuid> + 'a,
     <T as Aggregate>::DomainEvent: Serialize,
     for<'de> <T as Aggregate>::DomainEvent: serde::Deserialize<'de>,
 {
-    type DbError = sqlx::Error;
+    type DbError = DbError;
 
     fn stream(
         &mut self,
@@ -137,7 +223,7 @@ where
 
         res.map(|row| match row {
             Ok(row) => PartialEventRow::to_event(row),
-            Err(e) => Err(e),
+            Err(e) => Err(DbError::DbError(e)),
         })
         .boxed()
     }
@@ -168,7 +254,7 @@ where
                 Err(e) => Err(e),
             },
             Ok(None) => Ok(None),
-            Err(e) => Err(e),
+            Err(e) => Err(DbError::DbError(e)),
         }
     }
 
@@ -182,9 +268,7 @@ where
             .map(|event| {
                 let event_id = *event.id();
                 let event_version = event.version;
-                match serde_json::to_value(event.event)
-                    .map_err(|e| sqlx::Error::Decode(Box::new(e)))
-                {
+                match serde_json::to_value(event.event).map_err(DbError::SerializationError) {
                     Ok(s) => Ok(FullEventRow {
                         event_id,
                         version: i64::from(event_version),
@@ -237,7 +321,7 @@ where
         T: Serialize,
     {
         let aggregated_id = *snapshot.aggregate.aggregate_id();
-        let json_value = serde_json::to_value(snapshot).unwrap();
+        let json_value = serde_json::to_value(snapshot).map_err(DbError::SerializationError)?;
         sqlx::query!(
             "INSERT INTO snapshots(aggregate_id, snapshot, created_at) VALUES ($1, $2,$3)",
             aggregated_id,
@@ -251,6 +335,6 @@ where
     }
 
     async fn commit(self) -> Result<(), Self::DbError> {
-        self.commit().await
+        Ok(self.commit().await?)
     }
 }
