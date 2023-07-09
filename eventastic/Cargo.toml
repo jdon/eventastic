@@ -19,4 +19,3 @@ async-trait = { workspace = true }
 futures = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
-futures-time = { workspace = true }

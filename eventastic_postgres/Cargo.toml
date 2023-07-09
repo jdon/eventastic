@@ -13,7 +13,6 @@ keywords = ["postgres", "postgresql", "database", "ddd", "event-sourcing"]
 chrono = { workspace = true }
 eventastic = { path = "../eventastic", version = "0.1" }
 sqlx = { workspace = true }
-uuid = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }

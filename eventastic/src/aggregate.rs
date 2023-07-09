@@ -28,17 +28,10 @@
 use crate::event::Event;
 use std::fmt::Debug;
 
-mod repository;
 mod root;
 
-pub use repository::{RepositoryTransaction as EventSourcedRepository, *};
+use async_trait::async_trait;
 pub use root::*;
-
-#[derive(Debug, Clone)]
-pub struct SideEffect<Id, T> {
-    pub id: Id,
-    pub message: T,
-}
 
 /// An Aggregate represents a Domain Model that, through an Aggregate [Root],
 /// acts as a _transactional boundary_.
@@ -71,16 +64,10 @@ pub trait Aggregate: Sized + Send + Sync + Clone {
     /// mutating the Aggregate state.
     type ApplyError: Send + Sync + Debug;
 
-    /// The type of side effect that this aggregate can produce.
-    /// Usually, this type should be an `enum`.
-    type SideEffectId: Send + Sync + Clone + Debug + Eq + PartialEq;
-
-    /// The type of side effect that this aggregate can produce.
-    /// Usually, this type should be an `enum`.
-    type SideEffect: Send + Sync + Clone + Debug;
-
     /// The error type that can be returned when handling a [`Aggregate::SideEffect`]
-    type SideEffectError: Send + Sync + Debug;
+    /// The type of side effect that this aggregate can produce.
+    /// Usually, this type should be an `enum`.
+    type SideEffect: SideEffect;
 
     /// Returns the unique identifier for the Aggregate instance.
     fn aggregate_id(&self) -> &Self::AggregateId;
@@ -103,8 +90,25 @@ pub trait Aggregate: Sized + Send + Sync + Clone {
 
     /// Generate a list of side effects for this given aggregate and domain event
     /// The domain event has already been applied to the aggregate
-    fn side_effects(
+    fn side_effects(&self, event: &Self::DomainEvent) -> Option<Vec<Self::SideEffect>>;
+}
+
+pub trait SideEffect: Send + Sync + Debug {
+    /// The type used to uniquely identify this side effect.
+    type Id: Send + Sync + Debug + Clone;
+    /// The error type that can be returned when calling a [`SideEffectHandler::handle`]
+    type Error: Send + Sync + Debug;
+
+    fn id(&self) -> &Self::Id;
+}
+
+#[async_trait]
+pub trait SideEffectHandler {
+    type SideEffect: SideEffect;
+
+    async fn handle(
         &self,
-        event: &Self::DomainEvent,
-    ) -> Option<Vec<SideEffect<Self::SideEffectId, Self::SideEffect>>>;
+        msg: &Self::SideEffect,
+        retires: u16,
+    ) -> Result<(), (bool, <Self::SideEffect as SideEffect>::Error)>;
 }

@@ -1,13 +1,10 @@
-use std::fmt::Debug;
-
-use super::Snapshot;
-use crate::aggregate::RepositoryTransaction;
-use crate::aggregate::SideEffect;
+use crate::repository::{RepositoryTransaction, Snapshot};
 use crate::{
     aggregate::Aggregate,
     event::{Event, EventStoreEvent},
     Version,
 };
+use std::fmt::Debug;
 
 /// A context object that should be used by the Aggregate [Root] methods to
 /// access the [Aggregate] state and to record new Domain Events.
@@ -20,7 +17,7 @@ where
     aggregate: T,
     version: Version,
     uncommitted_events: Vec<EventStoreEvent<T::DomainEventId, T::DomainEvent>>,
-    uncommitted_side_effects: Vec<SideEffect<T::SideEffectId, T::SideEffect>>,
+    uncommitted_side_effects: Vec<T::SideEffect>,
 }
 
 impl<T> Context<T>
@@ -54,9 +51,7 @@ where
     /// Returns the list of uncommitted, recorded [`Aggregate::SideEffect`]s from the [Context]
     /// and resets the internal list to its default value.
     #[doc(hidden)]
-    pub fn take_uncommitted_side_effects(
-        &mut self,
-    ) -> Vec<SideEffect<T::SideEffectId, T::SideEffect>> {
+    pub fn take_uncommitted_side_effects(&mut self) -> Vec<T::SideEffect> {
         std::mem::take(&mut self.uncommitted_side_effects)
     }
 
@@ -93,13 +88,8 @@ where
         Ok(self)
     }
 
-    /// Returns read access to the [Aggregate] state.
-    pub fn state(&self) -> &T {
-        &self.aggregate
-    }
-
     /// Checks if the event exists in the repository and that they are equal
-    pub async fn check_idempotency<'a, R>(
+    pub(crate) async fn check_idempotency<'a, R>(
         &self,
         repository: &mut R,
         aggregate_id: &T::AggregateId,
@@ -135,7 +125,7 @@ where
         Ok(false)
     }
 
-    pub fn record_new(event: T::DomainEvent) -> Result<Context<T>, T::ApplyError> {
+    pub(crate) fn record_new(event: T::DomainEvent) -> Result<Context<T>, T::ApplyError> {
         let aggregate = T::apply_new(&event)?;
         let mut uncommitted_side_effects = vec![];
 
@@ -156,7 +146,17 @@ where
 
         Ok(root)
     }
+    /// Returns read access to the [Aggregate] state.
+    pub fn state(&self) -> &T {
+        &self.aggregate
+    }
 
+    /// Records a change to the [Aggregate] [Root], expressed by the specified
+    /// Domain Event.
+    /// # Errors
+    ///
+    /// The method can return an error if the event to apply is unexpected
+    /// given the current state of the Aggregate.
     pub async fn record_that<'a, R>(
         &mut self,
         repository: &mut R,
@@ -230,6 +230,12 @@ pub trait Root<T>
 where
     T: Aggregate,
 {
+    /// Creates a new [Aggregate] [Root] instance by applying the specified
+    /// Domain Event.
+    /// # Errors
+    ///
+    /// The method can return an error if the event to apply is unexpected
+    /// given the current state of the Aggregate.
     fn record_new(event: T::DomainEvent) -> Result<Context<T>, T::ApplyError> {
         Context::record_new(event)
     }
