@@ -64,7 +64,6 @@ pub trait Aggregate: Sized + Send + Sync + Clone {
     /// mutating the Aggregate state.
     type ApplyError: Send + Sync + Debug;
 
-    /// The error type that can be returned when handling a [`Aggregate::SideEffect`]
     /// The type of side effect that this aggregate can produce.
     /// Usually, this type should be an `enum`.
     type SideEffect: SideEffect;
@@ -88,7 +87,7 @@ pub trait Aggregate: Sized + Send + Sync + Clone {
     /// given the current state of the Aggregate.
     fn apply(&mut self, event: &Self::DomainEvent) -> Result<(), Self::ApplyError>;
 
-    /// Generate a list of side effects for this given aggregate and domain event
+    /// Generates a list of side effects for this given aggregate and domain event
     /// The domain event has already been applied to the aggregate
     fn side_effects(&self, event: &Self::DomainEvent) -> Option<Vec<Self::SideEffect>>;
 }
@@ -99,6 +98,7 @@ pub trait SideEffect: Send + Sync + Debug {
     /// The error type that can be returned when calling a [`SideEffectHandler::handle`]
     type Error: Send + Sync + Debug;
 
+    /// Returns read access to the [`SideEffect::Id`]
     fn id(&self) -> &Self::Id;
 }
 
@@ -106,6 +106,13 @@ pub trait SideEffect: Send + Sync + Debug {
 pub trait SideEffectHandler {
     type SideEffect: SideEffect;
 
+    /// Handles a side effect
+    ///
+    /// If Ok(()) is returned, the side effect is complete and it will be deleted from the repository.
+    ///
+    /// If Err((true, Error)) is returned, the side effect be will requeued
+    ///
+    /// if Err((false, Error)) is returned, the side effect won't be requeued
     async fn handle(
         &self,
         msg: &Self::SideEffect,

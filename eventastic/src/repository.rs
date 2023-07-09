@@ -175,14 +175,14 @@ where
             .await
             .map_err(RepositoryError::Repository)?;
 
-        self.insert_outbox_items(side_effects_to_commit).await?;
+        self.insert_side_effects(side_effects_to_commit).await?;
 
         Ok(())
     }
 
-    /// Insert or update an outbox item into the repository.
+    /// Insert side effects in to the repository
     #[doc(hidden)]
-    async fn insert_outbox_items(
+    async fn insert_side_effects(
         &mut self,
         outbox_item: Vec<T::SideEffect>,
     ) -> Result<(), Self::DbError>

@@ -26,11 +26,13 @@ pub struct PostgresTransaction<'a> {
 }
 
 impl<'a> PostgresTransaction<'a> {
+    /// Commit the transaction to the db.
     pub async fn commit(self) -> Result<(), sqlx::Error> {
         self.inner.commit().await
     }
 
-    pub async fn get_outbox_items<T: SideEffect>(
+    /// Returns a batch of 10 outbox items
+    pub async fn get_outbox_batch<T: SideEffect>(
         &mut self,
     ) -> Result<Vec<OutBoxMessage<T>>, DbError>
     where
@@ -52,7 +54,7 @@ impl<'a> PostgresTransaction<'a> {
             .collect::<Result<Vec<_>, _>>()
     }
 
-    /// Delete an item from the outbox.
+    /// Deletes an item from the outbox.
     #[doc(hidden)]
     pub async fn delete_outbox_item<T>(&mut self, outbox_id: T) -> Result<(), DbError>
     where
@@ -70,7 +72,7 @@ impl<'a> PostgresTransaction<'a> {
         Ok(())
     }
 
-    /// Delete an item from the outbox.
+    /// Update the [`OutBoxMessage::retries`] and [`OutBoxMessage:requeue`] for a specific [`OutBoxMessage`]
     #[doc(hidden)]
     pub async fn update_outbox_item<T>(
         &mut self,
@@ -173,8 +175,10 @@ where
         sqlx::Decode<'sql, Postgres> + sqlx::Type<Postgres> + sqlx::Encode<'sql, Postgres> + Unpin,
     for<'de> <T as Aggregate>::DomainEvent: serde::Deserialize<'de>,
 {
+    /// The type of error that is returned from the database.
     type DbError = DbError;
 
+    /// Returns a stream of domain events.
     fn stream(
         &mut self,
         id: &T::AggregateId,
@@ -195,6 +199,7 @@ where
         .boxed()
     }
 
+    /// Returns a specific domain event from the database.
     async fn get_event(
         &mut self,
         aggregate_id: &T::AggregateId,
@@ -221,6 +226,7 @@ where
         }
     }
 
+    /// Adds new domain events to the database
     async fn append(
         &mut self,
         id: &T::AggregateId,
@@ -264,6 +270,7 @@ where
         Ok(())
     }
 
+    /// Returns a snapshot of the aggregate in the database
     async fn get_snapshot(&mut self, id: &T::AggregateId) -> Option<Snapshot<T>> {
         let json_value = query_as::<_, PartialSnapShotRow>(
             "SELECT snapshot from snapshots where aggregate_id = $1",
@@ -276,6 +283,7 @@ where
         serde_json::from_value(json_value.snapshot).ok()
     }
 
+    /// Stores a snapshot of the aggregate in the database
     async fn store_snapshot(&mut self, snapshot: Snapshot<T>) -> Result<(), Self::DbError>
     where
         T: Serialize,
@@ -292,9 +300,9 @@ where
         Ok(())
     }
 
-    /// Insert side effects into the db
+    /// Insert side effects into the database
     #[doc(hidden)]
-    async fn insert_outbox_items(
+    async fn insert_side_effects(
         &mut self,
         outbox_item: Vec<T::SideEffect>,
     ) -> Result<(), Self::DbError>
@@ -330,6 +338,7 @@ where
         Ok(())
     }
 
+    /// Commit the transaction to the db.
     async fn commit(self) -> Result<(), Self::DbError> {
         Ok(self.commit().await?)
     }

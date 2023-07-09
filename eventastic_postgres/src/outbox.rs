@@ -44,20 +44,9 @@ where
     }
 }
 
-// #[async_trait]
-// pub trait OutBoxMessageHandler<Id, T, E>: Send + Sync {
-//     /// Handle a side effect
-//     /// If Ok(()) is returned, the side effect is complete and it will be deleted from the repository.
-//     /// If Err(false, _) is returned, the side effect will not not be retried.
-//     /// If Err(true, _) is returned, the side effect will be retried.
-//     async fn handle(&self, msg: &OutBoxMessage<Id, T>) -> Result<(), (bool, E)>;
-// }
-
 impl PostgresRepository {
     /// Start the outbox.
     /// This function will run forever, so should generally be spawned as a background task
-    /// .
-    /// Default implementation runs every 30 seconds and handles messages in batches
     pub async fn start_outbox<T, H>(
         &self,
         handler: H,
@@ -76,15 +65,14 @@ impl PostgresRepository {
             let deadline = std::time::Instant::now() + poll_interval;
 
             // Errors are ignored in the default implementation as they are added to the dead box.
-            let _ = self.run_outbox::<T, H>(handler.clone()).await;
+            let _ = self.process_outbox_batch::<T, H>(handler.clone()).await;
             tokio::time::sleep_until(deadline.into()).await;
         }
     }
 
-    /// Process
-    /// This function will run forever, so should generally be spawned as a background task.
+    /// Process a batch of outbox items.
     #[doc(hidden)]
-    async fn run_outbox<T, H>(&self, handler: Arc<H>) -> Result<(), DbError>
+    async fn process_outbox_batch<T, H>(&self, handler: Arc<H>) -> Result<(), DbError>
     where
         T: SideEffect + DeserializeOwned,
         H: SideEffectHandler<SideEffect = T>,
@@ -93,9 +81,9 @@ impl PostgresRepository {
             + sqlx::Encode<'sql, Postgres>
             + Unpin,
     {
-        let mut tx = self.transaction().await?;
+        let mut tx = self.begin_transaction().await?;
 
-        let outbox_items = tx.get_outbox_items::<T>().await?;
+        let outbox_items = tx.get_outbox_batch::<T>().await?;
 
         for mut item in outbox_items {
             let item_id = item.message.id().clone();

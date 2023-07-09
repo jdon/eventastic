@@ -18,7 +18,8 @@ impl PostgresRepository {
         Ok(Self { inner: pool })
     }
 
-    pub async fn transaction(&self) -> Result<PostgresTransaction<'_>, sqlx::Error> {
+    /// Start a new transaction using the default isolation level
+    pub async fn begin_transaction(&self) -> Result<PostgresTransaction<'_>, sqlx::Error> {
         Ok(PostgresTransaction {
             inner: self.inner.begin().await?,
         })

@@ -33,7 +33,7 @@ async fn main() -> Result<(), anyhow::Error> {
     });
 
     // Start transaction
-    let mut transaction = repository.transaction().await?;
+    let mut transaction = repository.begin_transaction().await?;
 
     let account_id = Uuid::new_v4();
 
@@ -70,7 +70,7 @@ async fn main() -> Result<(), anyhow::Error> {
     transaction.commit().await?;
 
     // Get the aggregate from the db
-    let mut transaction = repository.transaction().await?;
+    let mut transaction = repository.begin_transaction().await?;
 
     let mut account: Context<Account> = transaction.get(&account_id).await?;
 
@@ -95,7 +95,7 @@ async fn main() -> Result<(), anyhow::Error> {
 
     transaction.commit().await?;
 
-    let mut transaction = repository.transaction().await?;
+    let mut transaction = repository.begin_transaction().await?;
 
     let account: Context<Account> = transaction.get(&account_id).await?;
 
@@ -227,6 +227,8 @@ impl Aggregate for Account {
     /// mutating the Aggregate state.
     type ApplyError = DomainError;
 
+    /// The type of side effect that this aggregate can produce.
+    /// Usually, this type should be an `enum`.
     type SideEffect = SideEffects;
 
     /// Returns the unique identifier for the Aggregate instance.
@@ -275,6 +277,8 @@ impl Aggregate for Account {
         }
     }
 
+    /// Generates a list of side effects for this given aggregate and domain event
+    /// The domain event has already been applied to the aggregate
     fn side_effects(&self, event: &Self::DomainEvent) -> Option<Vec<Self::SideEffect>> {
         let side_effect = match event {
             AccountEvent::Open {
