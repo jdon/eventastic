@@ -1,6 +1,6 @@
 [package]
 name = "eventastic_postgres"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "MIT"
 readme = "../README.md"
@@ -11,7 +11,7 @@ keywords = ["postgres", "postgresql", "database", "ddd", "event-sourcing"]
 
 [dependencies]
 chrono = { workspace = true }
-eventastic = { path = "../eventastic", version = "0.1" }
+eventastic = { path = "../eventastic", version = "0.2" }
 sqlx = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
