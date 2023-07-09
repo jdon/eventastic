@@ -13,3 +13,11 @@ CREATE TABLE if not exists snapshots (
   snapshot jsonb NOT NULL,
   created_at timestamptz NOT NULL
 );
+
+CREATE TABLE if not exists outbox (
+  id uuid PRIMARY KEY,
+  message jsonb NOT NULL,
+  retries integer NOT NULL,
+  requeue boolean NOT NULL,
+  created_at timestamptz NOT NULL
+);

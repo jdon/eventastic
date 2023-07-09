@@ -1,15 +1,14 @@
-use std::fmt::Debug;
-
 use async_trait::async_trait;
 use futures::TryStreamExt;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use std::fmt::Debug;
 
 use crate::{
     aggregate::{Aggregate, Context},
     event::{EventStoreEvent, Stream},
 };
 
-/// List of possible errors that can be returned by the [`Repository`] / [`RepositoryTransaction`] trait.
+/// List of possible errors that can be returned by the [`RepositoryTransaction`] trait.
 #[derive(Debug, thiserror::Error)]
 pub enum RepositoryError<E, EventId, DE> {
     /// This error is returned by [`RepositoryTransaction::get`] when the
@@ -147,12 +146,15 @@ where
     ) -> Result<(), RepositoryError<T::ApplyError, T::DomainEventId, Self::DbError>>
     where
         T: Serialize,
+        T::SideEffect: Serialize,
     {
         let events_to_commit = root.take_uncommitted_events();
 
         if events_to_commit.is_empty() {
             return Ok(());
         }
+
+        let side_effects_to_commit = root.take_uncommitted_side_effects();
 
         let aggregate_id = root.aggregate_id();
 
@@ -173,23 +175,19 @@ where
             .await
             .map_err(RepositoryError::Repository)?;
 
+        self.insert_side_effects(side_effects_to_commit).await?;
+
         Ok(())
     }
 
+    /// Insert side effects in to the repository
+    #[doc(hidden)]
+    async fn insert_side_effects(
+        &mut self,
+        outbox_item: Vec<T::SideEffect>,
+    ) -> Result<(), Self::DbError>
+    where
+        T::SideEffect: Serialize + 'async_trait;
+
     async fn commit(self) -> Result<(), Self::DbError>;
-}
-
-/// A Repository is an object that creates a [`RepositoryTransaction`]
-#[async_trait]
-pub trait Repository<'a, T, Transaction>: Send + Sync
-where
-    T: Aggregate,
-    T::AggregateId: Clone + Send + Sync,
-    T::ApplyError: Debug,
-    Transaction: RepositoryTransaction<'a, T, DbError = Self::DbError>,
-{
-    /// The error type returned by the Store during a [`RepositoryTransaction::stream`] and [`RepositoryTransaction::append`] call.
-    type DbError: Send + Sync;
-
-    async fn begin(&'a self) -> Result<Transaction, Self::DbError>;
 }

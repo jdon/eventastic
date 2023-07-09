@@ -2,10 +2,13 @@
 members = ["eventastic", "eventastic_postgres", "examples/*"]
 
 [workspace.dependencies]
+# Eventastic dependencies
 async-trait = "0.1"
 futures = "0.3"
 serde = { version = "1", features = ["derive"] }
 thiserror = "1"
+
+# Eventastic postgres dependencies
 sqlx = { version = "0.7", features = [
 	"runtime-tokio-rustls",
 	"postgres",
