@@ -89,14 +89,14 @@ where
     }
 
     /// Checks if the event exists in the repository and that they are equal
-    pub(crate) async fn check_idempotency<'a, R>(
+    pub(crate) async fn check_idempotency<R>(
         &self,
         repository: &mut R,
         aggregate_id: &T::AggregateId,
         event: &T::DomainEvent,
-    ) -> Result<bool, RecordError<T, <R as RepositoryTransaction<'a, T>>::DbError>>
+    ) -> Result<bool, RecordError<T, <R as RepositoryTransaction<T>>::DbError>>
     where
-        R: RepositoryTransaction<'a, T>,
+        R: RepositoryTransaction<T>,
     {
         if let Some(saved_event) = repository
             .get_event(aggregate_id, event.id())
@@ -157,13 +157,13 @@ where
     ///
     /// The method can return an error if the event to apply is unexpected
     /// given the current state of the Aggregate.
-    pub async fn record_that<'a, R>(
+    pub async fn record_that<R>(
         &mut self,
         repository: &mut R,
         event: T::DomainEvent,
-    ) -> Result<(), RecordError<T, <R as RepositoryTransaction<'a, T>>::DbError>>
+    ) -> Result<(), RecordError<T, <R as RepositoryTransaction<T>>::DbError>>
     where
-        R: RepositoryTransaction<'a, T>,
+        R: RepositoryTransaction<T>,
     {
         // Check if the event is has already been applied, if so let's ignore it.
         if self

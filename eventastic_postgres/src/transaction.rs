@@ -163,7 +163,7 @@ struct OutBoxRow {
 }
 
 #[async_trait]
-impl<'a, T> RepositoryTransaction<'a, T> for PostgresTransaction<'a>
+impl<T, 'a> RepositoryTransaction<T> for PostgresTransaction<'a>
 where
     T: Aggregate + 'a + DeserializeOwned + Serialize,
     <T as Aggregate>::DomainEvent: Serialize,

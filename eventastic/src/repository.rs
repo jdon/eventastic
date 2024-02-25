@@ -52,12 +52,12 @@ where
 /// A RepositoryTransaction is an object that allows to load and save
 /// an [`Aggregate`] from and to a persistent data store
 #[async_trait]
-pub trait RepositoryTransaction<T, 'a>: Send + Sync
+pub trait RepositoryTransaction<T>
 where
     T: Aggregate,
     T::AggregateId: Clone + Send + Sync,
     T::ApplyError: Debug,
-    Self: Sized,
+    Self: Sized + Send + Sync,
 {
     /// The error type returned by the Store during a [`RepositoryTransaction::stream`] and [`RepositoryTransaction::append`] call.
     type DbError: Send + Sync;
