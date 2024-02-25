@@ -4,6 +4,7 @@ use sqlx::{
     Pool, Postgres,
 };
 
+#[derive(Clone)]
 pub struct PostgresRepository {
     pub(crate) inner: Pool<Postgres>,
 }
