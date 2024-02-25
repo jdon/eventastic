@@ -47,7 +47,7 @@ pub use root::*;
 /// More on Aggregates can be found here: `<https://www.dddcommunity.org/library/vernon_2011/>`
 pub trait Aggregate: Sized + Send + Sync + Clone {
     /// The current version of the snapshot to store.
-    /// This should be number should be increased when a breaking change is made to the apply functions.
+    /// This number should be increased when a breaking change is made to the apply functions.
     const SNAPSHOT_VERSION: u32;
 
     /// The type used to uniquely identify the Aggregate.
