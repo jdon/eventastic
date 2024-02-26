@@ -6,6 +6,7 @@ use std::fmt::Debug;
 use crate::{
     aggregate::{Aggregate, Context},
     event::{EventStoreEvent, Stream},
+    Version,
 };
 
 /// List of possible errors that can be returned by the [`RepositoryTransaction`] trait.
@@ -70,6 +71,15 @@ where
         id: &T::AggregateId,
     ) -> Stream<T::DomainEventId, T::DomainEvent, Self::DbError>;
 
+    /// Opens an Event Stream, effectively streaming all Domain Events
+    /// of an Event Stream back in the application from a specific version.
+    #[doc(hidden)]
+    fn stream_from(
+        &mut self,
+        id: &T::AggregateId,
+        version: Version,
+    ) -> Stream<T::DomainEventId, T::DomainEvent, Self::DbError>;
+
     // Get a specific event from the event store.
     #[doc(hidden)]
     async fn get_event(
@@ -113,18 +123,24 @@ where
     {
         let snapshot = self.get_snapshot(id).await;
 
-        if let Some(snapshot) = snapshot {
+        let (context, version) = if let Some(snapshot) = snapshot {
             if snapshot.snapshot_version == T::SNAPSHOT_VERSION {
                 // Snapshot is valid so return it
                 let context: Context<T> = snapshot.into();
-                return Ok(context);
+                // We want to get the next event in the stream
+                let version = context.version() + 1;
+                (Some(context), version)
+            } else {
+                (None, 0)
             }
-        }
+        } else {
+            (None, 0)
+        };
 
         let ctx = self
-            .stream(id)
+            .stream_from(id, version)
             .map_err(RepositoryError::Repository)
-            .try_fold(None, |ctx: Option<Context<T>>, event| async move {
+            .try_fold(context, |ctx: Option<Context<T>>, event| async move {
                 let new_ctx_result = match ctx {
                     None => Context::rehydrate_from(&event),
                     Some(ctx) => ctx.apply_rehydrated_event(&event),
@@ -187,7 +203,7 @@ where
         outbox_item: Vec<T::SideEffect>,
     ) -> Result<(), Self::DbError>
     where
-        T::SideEffect: Serialize + 'async_trait;
+        T::SideEffect: Serialize;
 
     async fn commit(self) -> Result<(), Self::DbError>;
 }

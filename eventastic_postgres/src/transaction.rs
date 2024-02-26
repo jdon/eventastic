@@ -12,6 +12,7 @@ use eventastic::event::EventStoreEvent;
 use eventastic::event::Stream;
 use eventastic::repository::RepositoryTransaction;
 use eventastic::repository::Snapshot;
+use eventastic::Version;
 use futures_util::stream::StreamExt;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -187,9 +188,32 @@ where
             "
             SELECT event, event_id, version
             FROM events 
-            where aggregate_id = $1",
+            where aggregate_id = $1 ORDER BY version ASC",
         )
         .bind(id.clone())
+        .fetch(&mut *self.inner);
+
+        res.map(|row| match row {
+            Ok(row) => PartialEventRow::to_event(row),
+            Err(e) => Err(DbError::DbError(e)),
+        })
+        .boxed()
+    }
+
+    /// Returns a stream of domain events.
+    fn stream_from(
+        &mut self,
+        id: &T::AggregateId,
+        version: Version,
+    ) -> Stream<T::DomainEventId, T::DomainEvent, Self::DbError> {
+        let res = query_as::<_, PartialEventRow<T::DomainEventId>>(
+            "
+                SELECT event, event_id, version
+                FROM events 
+                where aggregate_id = $1 AND version >= $2 ORDER BY version ASC",
+        )
+        .bind(id.clone())
+        .bind(version as i32)
         .fetch(&mut *self.inner);
 
         res.map(|row| match row {
@@ -232,6 +256,10 @@ where
         id: &T::AggregateId,
         events: Vec<EventStoreEvent<T::DomainEventId, T::DomainEvent>>,
     ) -> Result<(), Self::DbError> {
+        if events.is_empty() {
+            return Ok(());
+        }
+
         let events = events
             .into_iter()
             .map(|event| {
@@ -290,7 +318,7 @@ where
     {
         let aggregated_id = snapshot.aggregate.aggregate_id().clone();
         let json_value = serde_json::to_value(snapshot).map_err(DbError::SerializationError)?;
-        query("INSERT INTO snapshots(aggregate_id, snapshot, created_at) VALUES ($1, $2,$3)")
+        query("INSERT INTO snapshots(aggregate_id, snapshot, created_at) VALUES ($1, $2, $3) ON CONFLICT (aggregate_id) DO UPDATE SET snapshot = $2, created_at = $3")
             .bind(aggregated_id)
             .bind(json_value)
             .bind(Utc::now())
@@ -307,12 +335,14 @@ where
         outbox_item: Vec<T::SideEffect>,
     ) -> Result<(), Self::DbError>
     where
-        T::SideEffect: Serialize + 'async_trait,
+        T::SideEffect: Serialize,
     {
+        if outbox_item.is_empty() {
+            return Ok(());
+        }
+
         let mut query_builder: QueryBuilder<Postgres> =
             QueryBuilder::new("INSERT INTO outbox(id, message, retries, requeue, created_at) ");
-
-        // let items:  = vec![];
 
         let outbox_item = outbox_item
             .into_iter()

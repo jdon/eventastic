@@ -84,6 +84,8 @@ where
         mut self,
         event: &EventStoreEvent<T::DomainEventId, T::DomainEvent>,
     ) -> Result<Context<T>, T::ApplyError> {
+        self.version += 1;
+        debug_assert!(self.version == event.version);
         self.aggregate.apply(&event.event)?;
         Ok(self)
     }
