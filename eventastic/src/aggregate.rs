@@ -48,7 +48,7 @@ pub use root::*;
 pub trait Aggregate: Sized + Send + Sync + Clone {
     /// The current version of the snapshot to store.
     /// This number should be increased when a breaking change is made to the apply functions.
-    const SNAPSHOT_VERSION: u32;
+    const SNAPSHOT_VERSION: u64;
 
     /// The type used to uniquely identify the Aggregate.
     type AggregateId: Send + Sync + Clone + Debug + Eq + PartialEq;

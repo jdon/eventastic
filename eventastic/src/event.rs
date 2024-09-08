@@ -6,8 +6,6 @@ use std::fmt::Debug;
 use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};
 
-use crate::Version;
-
 /// An [`Event`] that will be / has been persisted to the Event Store.
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct EventStoreEvent<Id, Evt>
@@ -20,7 +18,7 @@ where
     pub id: Id,
 
     // The version of the event
-    pub version: Version,
+    pub version: u64,
 
     /// The actual Domain Event.
     pub event: Evt,

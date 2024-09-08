@@ -23,6 +23,10 @@ async fn main() -> Result<(), anyhow::Error> {
     // Setup postgres repo
     let repository = get_repository().await;
 
+    //Migrate the db
+
+    repository.run_migrations().await?;
+
     // Run our side effects handler in a background task
     tokio::spawn(async {
         let repository = get_repository().await;
@@ -112,7 +116,7 @@ async fn main() -> Result<(), anyhow::Error> {
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct Account {
     pub account_id: Uuid,
-    balance: u64,
+    balance: i64,
 }
 
 // Define our domain events
@@ -122,15 +126,15 @@ pub enum AccountEvent {
         account_id: Uuid,
         event_id: Uuid,
         email: String,
-        starting_balance: u64,
+        starting_balance: i64,
     },
     Add {
         event_id: Uuid,
-        amount: u64,
+        amount: i64,
     },
     Remove {
         event_id: Uuid,
-        amount: u64,
+        amount: i64,
     },
 }
 
@@ -211,7 +215,7 @@ impl SideEffectHandler for SideEffectContext {
 impl Aggregate for Account {
     /// The current version of the snapshot to store.
     /// This should be number should be increased when a breaking change is made to the apply functions.
-    const SNAPSHOT_VERSION: u32 = 1;
+    const SNAPSHOT_VERSION: u64 = 1;
 
     /// The type used to uniquely identify the Aggregate.
     type AggregateId = Uuid;

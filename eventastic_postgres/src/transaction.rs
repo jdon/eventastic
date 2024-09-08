@@ -12,7 +12,7 @@ use eventastic::event::EventStoreEvent;
 use eventastic::event::Stream;
 use eventastic::repository::RepositoryTransaction;
 use eventastic::repository::Snapshot;
-use eventastic::Version;
+use futures::stream;
 use futures_util::stream::StreamExt;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -33,11 +33,10 @@ impl<'a> PostgresTransaction<'a> {
     }
 
     /// Returns a batch of 10 outbox items
-    pub async fn get_outbox_batch<T: SideEffect>(
-        &mut self,
-    ) -> Result<Vec<OutBoxMessage<T>>, DbError>
+    pub async fn get_outbox_batch<T>(&mut self) -> Result<Vec<OutBoxMessage<T>>, DbError>
     where
         T: DeserializeOwned,
+        T: SideEffect,
     {
         let messages = query_as::<_, OutBoxRow>(
             "SELECT * from outbox WHERE requeue = true ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 10 "
@@ -134,20 +133,12 @@ where
         Evt: Send + Sync + Clone + Eq,
         for<'de> Evt: serde::Deserialize<'de>,
     {
-        let version: u32 = {
-            match row.version.try_into() {
-                Ok(i) => i,
-                Err(e) => {
-                    return Err(DbError::DbError(sqlx::Error::Decode(Box::new(e))));
-                }
-            }
-        };
-
+        let row_version = u64::try_from(row.version).map_err(|_| DbError::InvalidVersionNumber)?;
         match serde_json::from_value::<Evt>(row.event) {
             Ok(e) => Ok(EventStoreEvent {
                 id: row.event_id,
                 event: e,
-                version,
+                version: row_version,
             }),
             Err(e) => Err(DbError::SerializationError(e)),
         }
@@ -204,8 +195,12 @@ where
     fn stream_from(
         &mut self,
         id: &T::AggregateId,
-        version: Version,
+        version: u64,
     ) -> Stream<T::DomainEventId, T::DomainEvent, Self::DbError> {
+        let Ok(version) = i64::try_from(version) else {
+            return stream::iter(vec![Err(DbError::InvalidVersionNumber)]).boxed();
+        };
+
         let res = query_as::<_, PartialEventRow<T::DomainEventId>>(
             "
                 SELECT event, event_id, version
@@ -213,7 +208,7 @@ where
                 where aggregate_id = $1 AND version >= $2 ORDER BY version ASC",
         )
         .bind(id.clone())
-        .bind(version as i32)
+        .bind(version)
         .fetch(&mut *self.inner);
 
         res.map(|row| match row {
@@ -264,11 +259,14 @@ where
             .into_iter()
             .map(|event| {
                 let event_id = event.id().clone();
-                let event_version = event.version;
+                let version = event.version;
+
+                let version = i64::try_from(version).map_err(|_| DbError::InvalidVersionNumber)?;
+
                 match serde_json::to_value(event.event).map_err(DbError::SerializationError) {
                     Ok(s) => Ok(FullEventRow {
                         event_id,
-                        version: i64::from(event_version),
+                        version,
                         aggregate_id: id.clone(),
                         event: s,
                         created_at: Utc::now(),

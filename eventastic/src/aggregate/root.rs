@@ -2,7 +2,6 @@ use crate::repository::{RepositoryTransaction, Snapshot};
 use crate::{
     aggregate::Aggregate,
     event::{Event, EventStoreEvent},
-    Version,
 };
 use std::fmt::Debug;
 
@@ -15,7 +14,7 @@ where
     T: Aggregate,
 {
     aggregate: T,
-    version: Version,
+    version: u64,
     uncommitted_events: Vec<EventStoreEvent<T::DomainEventId, T::DomainEvent>>,
     uncommitted_side_effects: Vec<T::SideEffect>,
 }
@@ -30,12 +29,12 @@ where
     }
 
     /// Returns the current version for the [Aggregate].
-    pub fn version(&self) -> Version {
+    pub fn version(&self) -> u64 {
         self.version
     }
 
     /// Returns the current snapshot of the [Aggregate].
-    pub fn snapshot_version(&self) -> u32 {
+    pub fn snapshot_version(&self) -> u64 {
         T::SNAPSHOT_VERSION
     }
 

@@ -13,4 +13,6 @@ pub enum DbError {
     SerializationError(#[source] serde_json::Error),
     #[error("Optimistic Concurrency Error {0}")]
     OptimisticConcurrency(sqlx::Error),
+    #[error("Invalid Version Number")]
+    InvalidVersionNumber,
 }

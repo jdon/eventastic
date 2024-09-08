@@ -6,7 +6,6 @@ use std::fmt::Debug;
 use crate::{
     aggregate::{Aggregate, Context},
     event::{EventStoreEvent, Stream},
-    Version,
 };
 
 /// List of possible errors that can be returned by the [`RepositoryTransaction`] trait.
@@ -37,8 +36,8 @@ where
     T: Aggregate,
 {
     pub aggregate: T,
-    pub version: u32,
-    pub snapshot_version: u32,
+    pub version: u64,
+    pub snapshot_version: u64,
 }
 
 impl<T> Snapshot<T>
@@ -77,7 +76,7 @@ where
     fn stream_from(
         &mut self,
         id: &T::AggregateId,
-        version: Version,
+        version: u64,
     ) -> Stream<T::DomainEventId, T::DomainEvent, Self::DbError>;
 
     // Get a specific event from the event store.

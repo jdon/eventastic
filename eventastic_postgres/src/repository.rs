@@ -25,4 +25,11 @@ impl PostgresRepository {
             inner: self.inner.begin().await?,
         })
     }
+
+    /// Run migrations on the database
+    pub async fn run_migrations(&self) -> Result<(), sqlx::Error> {
+        sqlx::migrate!("./migrations").run(&self.inner).await?;
+
+        Ok(())
+    }
 }
