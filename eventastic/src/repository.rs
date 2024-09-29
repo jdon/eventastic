@@ -1,5 +1,4 @@
 use async_trait::async_trait;
-use futures::TryStreamExt;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::fmt::Debug;
 
@@ -55,12 +54,12 @@ where
 pub trait RepositoryTransaction<T>
 where
     T: Aggregate,
-    T::AggregateId: Clone + Send + Sync,
+    T::AggregateId: Clone,
     T::ApplyError: Debug,
-    Self: Sized + Send + Sync,
+    Self: Sized,
 {
     /// The error type returned by the Store during a [`RepositoryTransaction::stream`] and [`RepositoryTransaction::append`] call.
-    type DbError: Send + Sync;
+    type DbError;
 
     /// Opens an Event Stream, effectively streaming all Domain Events
     /// of an Event Stream back in the application.
@@ -99,7 +98,7 @@ where
         &mut self,
         id: &T::AggregateId,
         events: Vec<EventStoreEvent<T::DomainEventId, T::DomainEvent>>,
-    ) -> Result<(), Self::DbError>;
+    ) -> Result<Vec<T::DomainEventId>, Self::DbError>;
 
     #[doc(hidden)]
     async fn get_snapshot(&mut self, id: &T::AggregateId) -> Option<Snapshot<T>>
@@ -118,82 +117,7 @@ where
         id: &T::AggregateId,
     ) -> Result<Context<T>, RepositoryError<T::ApplyError, T::DomainEventId, Self::DbError>>
     where
-        T: DeserializeOwned,
-    {
-        let snapshot = self.get_snapshot(id).await;
-
-        let (context, version) = if let Some(snapshot) = snapshot {
-            if snapshot.snapshot_version == T::SNAPSHOT_VERSION {
-                // Snapshot is valid so return it
-                let context: Context<T> = snapshot.into();
-                // We want to get the next event in the stream
-                let version = context.version() + 1;
-                (Some(context), version)
-            } else {
-                (None, 0)
-            }
-        } else {
-            (None, 0)
-        };
-
-        let ctx = self
-            .stream_from(id, version)
-            .map_err(RepositoryError::Repository)
-            .try_fold(context, |ctx: Option<Context<T>>, event| async move {
-                let new_ctx_result = match ctx {
-                    None => Context::rehydrate_from(&event),
-                    Some(ctx) => ctx.apply_rehydrated_event(&event),
-                };
-
-                let new_ctx = new_ctx_result.map_err(|e| RepositoryError::Apply(event.id, e))?;
-
-                Ok(Some(new_ctx))
-            })
-            .await?;
-
-        ctx.ok_or(RepositoryError::AggregateNotFound)
-    }
-
-    /// Stores a new version of an Aggregate Root instance to the data store.
-    async fn store(
-        &mut self,
-        root: &mut Context<T>,
-    ) -> Result<(), RepositoryError<T::ApplyError, T::DomainEventId, Self::DbError>>
-    where
-        T: Serialize,
-        T::SideEffect: Serialize,
-    {
-        let events_to_commit = root.take_uncommitted_events();
-
-        if events_to_commit.is_empty() {
-            return Ok(());
-        }
-
-        let side_effects_to_commit = root.take_uncommitted_side_effects();
-
-        let aggregate_id = root.aggregate_id();
-
-        let snapshot_version = root.snapshot_version();
-        let snapshot_to_store = root.state();
-
-        let snapshot = Snapshot {
-            snapshot_version,
-            aggregate: snapshot_to_store.clone(),
-            version: root.version(),
-        };
-
-        self.append(aggregate_id, events_to_commit)
-            .await
-            .map_err(RepositoryError::Repository)?;
-
-        self.store_snapshot(snapshot)
-            .await
-            .map_err(RepositoryError::Repository)?;
-
-        self.insert_side_effects(side_effects_to_commit).await?;
-
-        Ok(())
-    }
+        T: DeserializeOwned;
 
     /// Insert side effects in to the repository
     #[doc(hidden)]

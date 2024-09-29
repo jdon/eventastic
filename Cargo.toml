@@ -18,7 +18,7 @@ sqlx = { version = "0.8", features = [
 	"json",
 ] }
 
-uuid = { version = "1", features = ["v4", "serde"] }
+uuid = { version = "1", features = ["v7", "serde"] }
 chrono = "0.4"
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }

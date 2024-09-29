@@ -11,8 +11,6 @@ pub enum DbError {
     DbError(#[from] sqlx::Error),
     #[error("Serialization Error {0}")]
     SerializationError(#[source] serde_json::Error),
-    #[error("Optimistic Concurrency Error {0}")]
-    OptimisticConcurrency(sqlx::Error),
     #[error("Invalid Version Number")]
     InvalidVersionNumber,
 }

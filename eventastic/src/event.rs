@@ -10,9 +10,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct EventStoreEvent<Id, Evt>
 where
-    Id: Send + Debug,
-    Self: Send + Sync,
-    Evt: Send + Sync + Clone + Eq + PartialEq,
+    Id: Debug,
+    Evt: Clone + Eq + PartialEq,
 {
     /// The id of the event
     pub id: Id,
@@ -27,16 +26,15 @@ where
 /// A domain event.
 pub trait Event<Id>
 where
-    Id: Send + Debug,
+    Id: Debug,
 {
     fn id(&self) -> &Id;
 }
 
 impl<Id, Evt> Event<Id> for EventStoreEvent<Id, Evt>
 where
-    Id: Send + Debug,
-    Self: Send + Sync,
-    Evt: Send + Sync + Clone + Eq + PartialEq,
+    Id: Debug,
+    Evt: Clone + Eq + PartialEq,
 {
     fn id(&self) -> &Id {
         &self.id

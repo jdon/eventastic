@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use eventastic::aggregate::Aggregate;
 use eventastic::aggregate::Context;
 
-use eventastic::aggregate::RecordError;
 use eventastic::aggregate::Root;
+use eventastic::aggregate::SaveError;
 use eventastic::aggregate::SideEffect;
 use eventastic::aggregate::SideEffectHandler;
 use eventastic::event::Event;
@@ -39,11 +39,11 @@ async fn main() -> Result<(), anyhow::Error> {
     // Start transaction
     let mut transaction = repository.begin_transaction().await?;
 
-    let account_id = Uuid::new_v4();
+    let account_id = Uuid::now_v7();
 
-    let event_id = Uuid::new_v4();
+    let event_id = Uuid::now_v7();
 
-    let add_event_id = Uuid::new_v4();
+    let add_event_id = Uuid::now_v7();
 
     // Open a bank account
     let event = AccountEvent::Open {
@@ -63,12 +63,10 @@ async fn main() -> Result<(), anyhow::Error> {
 
     // Record add fund events.
     // Record takes in the transaction, as it does idempotency checks with the db.
-    account
-        .record_that(&mut transaction, add_event.clone())
-        .await?;
+    account.record_that(add_event.clone())?;
 
     // Save uncommitted events and side effects in the db.
-    transaction.store(&mut account).await?;
+    account.save(&mut transaction).await?;
 
     // Commit the transaction
     transaction.commit().await?;
@@ -87,26 +85,60 @@ async fn main() -> Result<(), anyhow::Error> {
         amount: 123,
     };
 
-    let err = account
-        .record_that(&mut transaction, changed_add_event)
-        .await
-        .expect_err("failed to get error");
-
-    assert!(matches!(err, RecordError::IdempotencyError(_, _)));
+    account.record_that(changed_add_event)?;
 
     // Applying the already applied event, will be ignored and return Ok
-    account.record_that(&mut transaction, add_event).await?;
+    let error = account
+        .save(&mut transaction)
+        .await
+        .expect_err("Failed to get idempotency error");
+
+    assert!(matches!(error, SaveError::IdempotencyError(_, _)));
 
     transaction.commit().await?;
 
     let mut transaction = repository.begin_transaction().await?;
 
-    let account: Context<Account> = transaction.get(&account_id).await?;
+    let mut transaction_2 = repository.begin_transaction().await?;
+
+    let mut old_account_version: Context<Account> = transaction_2.get(&account_id).await?;
+
+    let mut account: Context<Account> = transaction.get(&account_id).await?;
 
     // Balance hasn't changed since the event wasn't actually applied
     assert_eq!(account.state().balance, 345);
 
     println!("Got account {account:?}");
+
+    // Optimistic concurrency control error if we try to apply an event with the wrong version
+
+    let add_event = AccountEvent::Add {
+        event_id: Uuid::now_v7(),
+        amount: 456,
+    };
+
+    account.record_that(add_event)?;
+    account.save(&mut transaction).await?;
+    transaction.commit().await?;
+
+    let add_event = AccountEvent::Add {
+        event_id: Uuid::now_v7(),
+        amount: 789,
+    };
+
+    old_account_version.record_that(add_event)?;
+
+    let err = old_account_version
+        .save(&mut transaction_2)
+        .await
+        .expect_err("Failed to get optimistic concurrency error");
+
+    assert!(matches!(
+        err,
+        SaveError::OptimisticConcurrency(id, version) if id == account_id && version == 2
+    ));
+
+    transaction_2.commit().await?;
 
     tokio::time::sleep(std::time::Duration::from_secs(30)).await;
     Ok(())
