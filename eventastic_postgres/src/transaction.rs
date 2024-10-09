@@ -6,16 +6,12 @@ use async_trait::async_trait;
 use chrono::DateTime;
 use chrono::Utc;
 use eventastic::aggregate::Aggregate;
-use eventastic::aggregate::Context;
 use eventastic::aggregate::SideEffect;
 use eventastic::event::Event;
 use eventastic::event::EventStoreEvent;
-use eventastic::event::Stream;
-use eventastic::repository::RepositoryError;
 use eventastic::repository::RepositoryTransaction;
 use eventastic::repository::Snapshot;
 use futures::stream;
-use futures::TryStreamExt;
 use futures_util::stream::StreamExt;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -24,8 +20,8 @@ use sqlx::query_as;
 use sqlx::types::JsonValue;
 use sqlx::types::Uuid;
 use sqlx::QueryBuilder;
+use sqlx::Row;
 use sqlx::{Postgres, Transaction};
-
 pub struct PostgresTransaction<'a> {
     pub(crate) inner: Transaction<'a, Postgres>,
 }
@@ -172,7 +168,15 @@ where
     fn stream(
         &mut self,
         id: &T::AggregateId,
-    ) -> Stream<T::DomainEventId, T::DomainEvent, Self::DbError> {
+    ) -> impl futures::Stream<
+        Item = std::result::Result<
+            eventastic::event::EventStoreEvent<
+                <T as eventastic::aggregate::Aggregate>::DomainEventId,
+                <T as eventastic::aggregate::Aggregate>::DomainEvent,
+            >,
+            <Self as eventastic::repository::RepositoryTransaction<T>>::DbError,
+        >,
+    > {
         let res = query_as::<_, PartialEventRow<T::DomainEventId>>(
             "
             SELECT event, event_id, version
@@ -194,7 +198,15 @@ where
         &mut self,
         id: &T::AggregateId,
         version: u64,
-    ) -> Stream<T::DomainEventId, T::DomainEvent, Self::DbError> {
+    ) -> impl futures::Stream<
+        Item = std::result::Result<
+            eventastic::event::EventStoreEvent<
+                <T as eventastic::aggregate::Aggregate>::DomainEventId,
+                <T as eventastic::aggregate::Aggregate>::DomainEvent,
+            >,
+            <Self as eventastic::repository::RepositoryTransaction<T>>::DbError,
+        >,
+    > {
         let Ok(version) = i64::try_from(version) else {
             return stream::iter(vec![Err(DbError::InvalidVersionNumber)]).boxed();
         };
@@ -265,7 +277,7 @@ where
 
             let version = i64::try_from(version).map_err(|_| DbError::InvalidVersionNumber)?;
 
-            match serde_json::to_value(event.event).map_err(DbError::SerializationError) {
+            match serde_json::to_value(event.event) {
                 Ok(s) => {
                     event_ids_to_insert.push(event_id);
                     versions_to_insert.push(version);
@@ -273,22 +285,18 @@ where
                     events_to_insert.push(s);
                     created_ats_to_insert.push(Utc::now());
                 }
-                Err(e) => return Err(e),
+                Err(e) => return Err(e.into()),
             }
         }
 
-        let inserted_ids = sqlx::query!(
+        let inserted_ids:Result<Vec<Uuid>, sqlx::Error> = sqlx::query(
             "INSERT INTO events(event_id, version, aggregate_id, event, created_at) 
             SELECT * FROM UNNEST($1::uuid[], $2::bigint[], $3::uuid[], $4::jsonb[], $5::timestamptz[])
             ON CONFLICT DO NOTHING returning event_id",
-            &event_ids_to_insert[..],
-            &versions_to_insert[..],
-            &aggregate_ids_to_insert[..],
-            &events_to_insert[..],
-            &created_ats_to_insert[..]
-        ).fetch_all(&mut *self.inner).await?.into_iter().map(|row| row.event_id).collect();
+        ).bind(&event_ids_to_insert[..]).bind(&versions_to_insert[..]).bind(&aggregate_ids_to_insert[..]).bind(&events_to_insert[..]).bind(&created_ats_to_insert[..])
+        .fetch_all(&mut *self.inner).await?.into_iter().map(|row|row.try_get(0)).collect();
 
-        Ok(inserted_ids)
+        Ok(inserted_ids?)
     }
 
     /// Returns a snapshot of the aggregate in the database
@@ -364,47 +372,5 @@ where
     /// Commit the transaction to the db.
     async fn commit(self) -> Result<(), Self::DbError> {
         Ok(self.commit().await?)
-    }
-
-    /// Loads an Aggregate Root instance from the data store,
-    /// referenced by its unique identifier.
-    async fn get(
-        &mut self,
-        id: &T::AggregateId,
-    ) -> Result<Context<T>, RepositoryError<T::ApplyError, T::DomainEventId, Self::DbError>>
-    where
-        T: DeserializeOwned,
-    {
-        let snapshot = self.get_snapshot(id).await;
-
-        let (context, version) = if let Some(snapshot) = snapshot {
-            if snapshot.snapshot_version == T::SNAPSHOT_VERSION {
-                // Snapshot is valid so return it
-                let context: Context<T> = snapshot.into();
-                // We want to get the next event in the stream
-                let version = context.version() + 1;
-                (Some(context), version)
-            } else {
-                (None, 0)
-            }
-        } else {
-            (None, 0)
-        };
-
-        let ctx = <Self as RepositoryTransaction<T>>::stream_from(self, id, version)
-            .map_err(RepositoryError::Repository)
-            .try_fold(context, |ctx: Option<Context<T>>, event| async move {
-                let new_ctx_result = match ctx {
-                    None => Context::rehydrate_from(&event),
-                    Some(ctx) => ctx.apply_rehydrated_event(&event),
-                };
-
-                let new_ctx = new_ctx_result.map_err(|e| RepositoryError::Apply(event.id, e))?;
-
-                Ok(Some(new_ctx))
-            })
-            .await?;
-
-        ctx.ok_or(RepositoryError::AggregateNotFound)
     }
 }

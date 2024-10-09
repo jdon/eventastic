@@ -1,11 +1,9 @@
 use async_trait::async_trait;
+use futures::Stream;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::fmt::Debug;
 
-use crate::{
-    aggregate::{Aggregate, Context},
-    event::{EventStoreEvent, Stream},
-};
+use crate::{aggregate::Aggregate, event::EventStoreEvent};
 
 /// List of possible errors that can be returned by the [`RepositoryTransaction`] trait.
 #[derive(Debug, thiserror::Error)]
@@ -67,7 +65,12 @@ where
     fn stream(
         &mut self,
         id: &T::AggregateId,
-    ) -> Stream<T::DomainEventId, T::DomainEvent, Self::DbError>;
+    ) -> impl Stream<
+        Item = Result<
+            EventStoreEvent<T::DomainEventId, <T as Aggregate>::DomainEvent>,
+            Self::DbError,
+        >,
+    >;
 
     /// Opens an Event Stream, effectively streaming all Domain Events
     /// of an Event Stream back in the application from a specific version.
@@ -76,7 +79,12 @@ where
         &mut self,
         id: &T::AggregateId,
         version: u64,
-    ) -> Stream<T::DomainEventId, T::DomainEvent, Self::DbError>;
+    ) -> impl Stream<
+        Item = Result<
+            EventStoreEvent<T::DomainEventId, <T as Aggregate>::DomainEvent>,
+            Self::DbError,
+        >,
+    >;
 
     // Get a specific event from the event store.
     #[doc(hidden)]
@@ -89,10 +97,10 @@ where
         Self::DbError,
     >;
 
-    /// Appends a new Domain Events to the specified Event Stream.
+    /// Appends new Domain Events to the specified Event Stream.
     ///
-    /// The result of this operation is the new [Version] of the Event Stream
-    /// with the specified Domain Events added to it.
+    /// Returns a list of the Domain Event Ids that were successfully appended.
+    /// If
     #[doc(hidden)]
     async fn append(
         &mut self,
@@ -109,15 +117,6 @@ where
     async fn store_snapshot(&mut self, snapshot: Snapshot<T>) -> Result<(), Self::DbError>
     where
         T: Serialize;
-
-    /// Loads an Aggregate Root instance from the data store,
-    /// referenced by its unique identifier.
-    async fn get(
-        &mut self,
-        id: &T::AggregateId,
-    ) -> Result<Context<T>, RepositoryError<T::ApplyError, T::DomainEventId, Self::DbError>>
-    where
-        T: DeserializeOwned;
 
     /// Insert side effects in to the repository
     #[doc(hidden)]

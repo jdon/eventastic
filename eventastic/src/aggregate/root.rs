@@ -1,6 +1,8 @@
+use futures::TryStreamExt;
+use serde::de::DeserializeOwned;
 use serde::Serialize;
 
-use crate::repository::{RepositoryTransaction, Snapshot};
+use crate::repository::{RepositoryError, RepositoryTransaction, Snapshot};
 use crate::{
     aggregate::Aggregate,
     event::{Event, EventStoreEvent},
@@ -144,7 +146,7 @@ where
 
     pub async fn save<R>(
         &mut self,
-        repository: &mut R,
+        transaction: &mut R,
     ) -> Result<(), SaveError<T, <R as RepositoryTransaction<T>>::DbError>>
     where
         T: Serialize,
@@ -172,7 +174,7 @@ where
 
         // When we insert the events, it's possible that the events have already been inserted
         // If that's the case, we need to check if the previously inserted events are the same as the ones we have
-        let inserted_event_ids = repository
+        let inserted_event_ids = transaction
             .append(aggregate_id, events_to_commit.clone())
             .await
             .map_err(SaveError::Repository)?;
@@ -182,7 +184,7 @@ where
             // If that's the case, we need to check if the previously inserted events are the same as the ones we have
             for event in events_to_commit {
                 if !inserted_event_ids.contains(&event.id) {
-                    if let Some(saved_event) = repository
+                    if let Some(saved_event) = transaction
                         .get_event(aggregate_id, event.id())
                         .await
                         .map_err(SaveError::Repository)?
@@ -205,16 +207,58 @@ where
             }
         }
 
-        repository
+        transaction
             .store_snapshot(snapshot)
             .await
             .map_err(SaveError::Repository)?;
 
-        repository
+        transaction
             .insert_side_effects(side_effects_to_commit)
             .await?;
 
         Ok(())
+    }
+
+    pub async fn load<R>(
+        transaction: &mut R,
+        aggregate_id: &T::AggregateId,
+    ) -> Result<Context<T>, RepositoryError<T::ApplyError, T::DomainEventId, R::DbError>>
+    where
+        T: DeserializeOwned,
+        R: RepositoryTransaction<T>,
+    {
+        let snapshot = transaction.get_snapshot(aggregate_id).await;
+
+        let (context, version) = if let Some(snapshot) = snapshot {
+            if snapshot.snapshot_version == T::SNAPSHOT_VERSION {
+                // Snapshot is valid so return it
+                let context: Context<T> = snapshot.into();
+                // We want to get the next event in the stream
+                let version = context.version() + 1;
+                (Some(context), version)
+            } else {
+                (None, 0)
+            }
+        } else {
+            (None, 0)
+        };
+
+        let ctx = transaction
+            .stream_from(aggregate_id, version)
+            .map_err(RepositoryError::Repository)
+            .try_fold(context, |ctx: Option<Context<T>>, event| async move {
+                let new_ctx_result = match ctx {
+                    None => Context::rehydrate_from(&event),
+                    Some(ctx) => ctx.apply_rehydrated_event(&event),
+                };
+
+                let new_ctx = new_ctx_result.map_err(|e| RepositoryError::Apply(event.id, e))?;
+
+                Ok(Some(new_ctx))
+            })
+            .await?;
+
+        ctx.ok_or(RepositoryError::AggregateNotFound)
     }
 }
 

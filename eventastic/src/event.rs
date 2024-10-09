@@ -1,10 +1,8 @@
 //! Module `event` contains types and abstractions helpful for working
 //! with Domain Events.
 
-use std::fmt::Debug;
-
-use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};
+use std::fmt::Debug;
 
 /// An [`Event`] that will be / has been persisted to the Event Store.
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
@@ -40,6 +38,3 @@ where
         &self.id
     }
 }
-
-/// Stream is a stream of [`EventStoreEvent`] Domain Events.
-pub type Stream<'a, Id, Evt, Err> = BoxStream<'a, Result<EventStoreEvent<Id, Evt>, Err>>;
