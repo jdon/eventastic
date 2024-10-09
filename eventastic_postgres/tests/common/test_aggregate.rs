@@ -1,155 +1,15 @@
-use std::str::FromStr;
-
 use async_trait::async_trait;
 use eventastic::aggregate::Aggregate;
-use eventastic::aggregate::Context;
-
-use eventastic::aggregate::Root;
-use eventastic::aggregate::SaveError;
 use eventastic::aggregate::SideEffect;
 use eventastic::aggregate::SideEffectHandler;
 use eventastic::event::Event;
-use eventastic_postgres::PostgresRepository;
-
-use eventastic_postgres::RootExt;
 use serde::Deserialize;
 use serde::Serialize;
-use sqlx::{pool::PoolOptions, postgres::PgConnectOptions};
 use thiserror::Error;
 use uuid::Uuid;
 
-#[tokio::main]
-async fn main() -> Result<(), anyhow::Error> {
-    // Setup postgres repo
-    let repository = get_repository().await;
-
-    //Migrate the db
-
-    repository.run_migrations().await?;
-
-    // Run our side effects handler in a background task
-    tokio::spawn(async {
-        let repository = get_repository().await;
-
-        let _ = repository
-            .start_outbox(SideEffectContext {}, std::time::Duration::from_secs(5))
-            .await;
-    });
-
-    // Start transaction
-    let mut transaction = repository.begin_transaction().await?;
-
-    let account_id = Uuid::now_v7();
-
-    let event_id = Uuid::now_v7();
-
-    let add_event_id = Uuid::now_v7();
-
-    // Open a bank account
-    let event = AccountEvent::Open {
-        event_id,
-        account_id,
-        starting_balance: 21,
-        email: "user@example.com".into(),
-    };
-
-    let mut account = Account::record_new(event)?;
-
-    // Add funds to newly created account
-    let add_event = AccountEvent::Add {
-        event_id: add_event_id,
-        amount: 324,
-    };
-
-    // Record add fund events.
-    // Record takes in the transaction, as it does idempotency checks with the db.
-    account.record_that(add_event.clone())?;
-
-    // Save uncommitted events and side effects in the db.
-    account.save(&mut transaction).await?;
-
-    // Commit the transaction
-    transaction.commit().await?;
-
-    // Get the aggregate from the db
-    let mut transaction = repository.begin_transaction().await?;
-
-    let mut account = Account::load(&mut transaction, account_id).await?;
-
-    // Check our balance is correct
-    assert_eq!(account.state().balance, 345);
-
-    // Trying to apply the same event id but with different content gives us an IdempotencyError
-    let changed_add_event = AccountEvent::Add {
-        event_id: add_event_id,
-        amount: 123,
-    };
-
-    account.record_that(changed_add_event)?;
-
-    // Applying the already applied event, will be ignored and return Ok
-    let error = account
-        .save(&mut transaction)
-        .await
-        .expect_err("Failed to get idempotency error");
-
-    assert!(matches!(error, SaveError::IdempotencyError(_, _)));
-
-    transaction.commit().await?;
-
-    let mut transaction = repository.begin_transaction().await?;
-
-    let mut transaction_2 = repository.begin_transaction().await?;
-
-    let mut old_account_version: Context<Account> =
-        Context::load(&mut transaction_2, &account_id).await?;
-
-    let mut account: Context<Account> = Context::load(&mut transaction, &account_id).await?;
-
-    // Balance hasn't changed since the event wasn't actually applied
-    assert_eq!(account.state().balance, 345);
-
-    println!("Got account {account:?}");
-
-    // Apply a new add event and save to our db. This should have version number 2
-    let add_event = AccountEvent::Add {
-        event_id: Uuid::now_v7(),
-        amount: 456,
-    };
-
-    account.record_that(add_event)?;
-    account.save(&mut transaction).await?;
-    transaction.commit().await?;
-
-    // Attempt to apply another event to our aggregate, but with an out of date version number
-    // This happens normally when two applies are executed concurrently
-    // This will attempt to apply a different event with a version number 2
-    // This should fail with an optimistic concurrency error
-    let add_event = AccountEvent::Add {
-        event_id: Uuid::now_v7(),
-        amount: 789,
-    };
-
-    old_account_version.record_that(add_event)?;
-
-    let err = old_account_version
-        .save(&mut transaction_2)
-        .await
-        .expect_err("Failed to get optimistic concurrency error");
-
-    assert!(matches!(
-        err,
-        SaveError::OptimisticConcurrency(id, version) if id == account_id && version == 2
-    ));
-
-    transaction_2.commit().await?;
-
-    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-    Ok(())
-}
-
 // Define our aggregate
-#[derive(Clone, Serialize, Deserialize, Debug)]
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
 pub struct Account {
     pub account_id: Uuid,
     balance: i64,
@@ -225,8 +85,6 @@ impl SideEffect for SideEffects {
 pub enum SideEffectError {
     #[error("Failed to publish message")]
     PublishMessageError,
-    #[error("Failed to send email")]
-    SendEmailError,
 }
 
 pub struct SideEffectContext {}
@@ -337,15 +195,4 @@ impl Aggregate for Account {
         };
         side_effect.map(|s| vec![s])
     }
-}
-
-async fn get_repository() -> PostgresRepository {
-    let connection_options =
-        PgConnectOptions::from_str("postgres://postgres:password@localhost/postgres").unwrap();
-
-    let pool_options = PoolOptions::default();
-
-    PostgresRepository::new(connection_options, pool_options)
-        .await
-        .unwrap()
 }
