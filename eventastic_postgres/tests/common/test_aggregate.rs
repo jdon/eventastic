@@ -12,7 +12,7 @@ use uuid::Uuid;
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
 pub struct Account {
     pub account_id: Uuid,
-    balance: i64,
+    pub balance: i64,
 }
 
 // Define our domain events
@@ -108,8 +108,8 @@ impl SideEffectHandler for SideEffectContext {
 // Implement the aggregate trait for our aggregate struct
 impl Aggregate for Account {
     /// The current version of the snapshot to store.
-    /// This should be number should be increased when a breaking change is made to the apply functions.
-    const SNAPSHOT_VERSION: u64 = 1;
+    /// This number should be increased when a breaking change is made to the apply functions.
+    const SNAPSHOT_VERSION: u64 = 2;
 
     /// The type used to uniquely identify the Aggregate.
     type AggregateId = Uuid;

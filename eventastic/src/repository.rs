@@ -37,15 +37,6 @@ where
     pub snapshot_version: u64,
 }
 
-impl<T> Snapshot<T>
-where
-    T: Aggregate,
-{
-    pub fn id(&self) -> &T::AggregateId {
-        self.aggregate.aggregate_id()
-    }
-}
-
 /// A RepositoryTransaction is an object that allows to load and save
 /// an [`Aggregate`] from and to a persistent data store
 #[async_trait]
@@ -58,19 +49,6 @@ where
 {
     /// The error type returned by the Store during a [`RepositoryTransaction::stream`] and [`RepositoryTransaction::append`] call.
     type DbError;
-
-    /// Opens an Event Stream, effectively streaming all Domain Events
-    /// of an Event Stream back in the application.
-    #[doc(hidden)]
-    fn stream(
-        &mut self,
-        id: &T::AggregateId,
-    ) -> impl Stream<
-        Item = Result<
-            EventStoreEvent<T::DomainEventId, <T as Aggregate>::DomainEvent>,
-            Self::DbError,
-        >,
-    >;
 
     /// Opens an Event Stream, effectively streaming all Domain Events
     /// of an Event Stream back in the application from a specific version.
@@ -126,6 +104,4 @@ where
     ) -> Result<(), Self::DbError>
     where
         T::SideEffect: Serialize;
-
-    async fn commit(self) -> Result<(), Self::DbError>;
 }

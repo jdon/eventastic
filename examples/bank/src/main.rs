@@ -62,7 +62,6 @@ async fn main() -> Result<(), anyhow::Error> {
     };
 
     // Record add fund events.
-    // Record takes in the transaction, as it does idempotency checks with the db.
     account.record_that(add_event.clone())?;
 
     // Save uncommitted events and side effects in the db.

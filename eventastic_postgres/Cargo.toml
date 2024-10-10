@@ -5,7 +5,7 @@ edition = "2021"
 license = "MIT"
 readme = "../README.md"
 repository = "https://github.com/jdon/eventastic"
-description = "An example postgres event store for eventastic"
+description = "A postgres event store for eventastic"
 categories = ["web-programming", "asynchronous"]
 keywords = ["postgres", "postgresql", "database", "ddd", "event-sourcing"]
 

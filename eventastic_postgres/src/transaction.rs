@@ -165,35 +165,6 @@ where
     type DbError = DbError;
 
     /// Returns a stream of domain events.
-    fn stream(
-        &mut self,
-        id: &T::AggregateId,
-    ) -> impl futures::Stream<
-        Item = std::result::Result<
-            eventastic::event::EventStoreEvent<
-                <T as eventastic::aggregate::Aggregate>::DomainEventId,
-                <T as eventastic::aggregate::Aggregate>::DomainEvent,
-            >,
-            <Self as eventastic::repository::RepositoryTransaction<T>>::DbError,
-        >,
-    > {
-        let res = query_as::<_, PartialEventRow<T::DomainEventId>>(
-            "
-            SELECT event, event_id, version
-            FROM events 
-            where aggregate_id = $1 ORDER BY version ASC",
-        )
-        .bind(*id)
-        .fetch(&mut *self.inner);
-
-        res.map(|row| match row {
-            Ok(row) => PartialEventRow::to_event(row),
-            Err(e) => Err(DbError::DbError(e)),
-        })
-        .boxed()
-    }
-
-    /// Returns a stream of domain events.
     fn stream_from(
         &mut self,
         id: &T::AggregateId,
@@ -367,10 +338,5 @@ where
 
         query.execute(&mut *self.inner).await?;
         Ok(())
-    }
-
-    /// Commit the transaction to the db.
-    async fn commit(self) -> Result<(), Self::DbError> {
-        Ok(self.commit().await?)
     }
 }

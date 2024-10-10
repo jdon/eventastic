@@ -1,4 +1,5 @@
 use super::test_aggregate::{Account, AccountEvent};
+use chrono::{DateTime, Utc};
 use eventastic::aggregate::{Context, Root};
 use eventastic_postgres::PostgresRepository;
 use sqlx::Row;
@@ -22,10 +23,11 @@ pub async fn get_repository() -> PostgresRepository {
     repo
 }
 
-#[derive(serde::Deserialize, Debug, Clone)]
+#[derive(serde::Deserialize, Debug, Clone, serde::Serialize)]
 pub struct SavedSnapshot {
     pub version: i32,
     pub aggregate: Account,
+    pub snapshot_version: i32,
 }
 
 pub async fn get_account_snapshot(account_id: Uuid) -> Option<SavedSnapshot> {
@@ -49,6 +51,30 @@ pub async fn get_account_snapshot(account_id: Uuid) -> Option<SavedSnapshot> {
     .transpose()
     .expect("Failed to deserialize snapshot")
     .map(|snapshot| serde_json::from_value(snapshot).expect("Failed to deserialize snapshot"))
+}
+
+pub async fn replace_account_snapshot(account_id: Uuid, snapshot: SavedSnapshot) {
+    let repository = get_repository().await;
+
+    let transaction = repository
+        .begin_transaction()
+        .await
+        .expect("Failed to begin transaction");
+
+    let mut pg_transaction = transaction.into_inner();
+
+    let row = sqlx::query("UPDATE snapshots set snapshot = $1 where aggregate_id = $2")
+        .bind(serde_json::to_value(&snapshot).expect("Failed to serialize snapshot"))
+        .bind(account_id)
+        .execute(&mut *pg_transaction)
+        .await
+        .expect("Failed to update snapshot");
+
+    assert!(row.rows_affected() == 1, "Failed to update snapshot");
+    pg_transaction
+        .commit()
+        .await
+        .expect("Failed to commit transaction");
 }
 
 pub async fn delete_snapshot(account_id: Uuid) {
@@ -85,6 +111,24 @@ pub async fn load_account(account_id: Uuid) -> Context<Account> {
         .expect("Failed to load account");
 
     context
+}
+
+pub async fn get_latest_event_timestamp(account_id: Uuid) -> DateTime<Utc> {
+    let repository = get_repository().await;
+
+    let transaction = repository
+        .begin_transaction()
+        .await
+        .expect("Failed to begin transaction");
+
+    let row =
+        sqlx::query("SELECT MAX(created_at) as created_at FROM events where aggregate_id = $1")
+            .bind(account_id)
+            .fetch_one(&mut *transaction.into_inner())
+            .await
+            .expect("Failed to fetch timestamp");
+
+    row.get("created_at")
 }
 
 pub struct AccountBuilder {

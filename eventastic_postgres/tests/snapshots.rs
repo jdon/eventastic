@@ -1,7 +1,8 @@
 mod common;
 
 use common::helpers::{
-    delete_snapshot, get_account_snapshot, get_repository, load_account, AccountBuilder,
+    delete_snapshot, get_account_snapshot, get_repository, load_account, replace_account_snapshot,
+    AccountBuilder,
 };
 use common::test_aggregate::AccountEvent;
 use uuid::Uuid;
@@ -116,6 +117,7 @@ pub async fn snapshots_are_successfully_saved_when_new_event_is_applied() {
     assert_eq!(&saved_state, account.state());
 }
 
+#[tokio::test]
 pub async fn snapshots_are_rebuilt_if_snapshot_version_is_different() {
     // Arrange
     let account = AccountBuilder::new()
@@ -132,14 +134,19 @@ pub async fn snapshots_are_rebuilt_if_snapshot_version_is_different() {
         .expect("Failed to get snapshot");
 
     let mut snapshot = snapshot.clone();
-    snapshot.version += 1;
+    snapshot.snapshot_version = 0;
+
+    snapshot.aggregate.balance = 0;
+
+    // Insert our modified snapshot with a different version and balance
+    replace_account_snapshot(account_id, snapshot).await;
 
     // Act
 
+    // Account should be rebuilt and not use the snapshot with the wrong version
     let rebuilt_account = load_account(account_id).await;
 
     // Assert
 
     assert_eq!(rebuilt_account.state(), account.state());
-    assert!(get_account_snapshot(account_id).await.is_none());
 }
