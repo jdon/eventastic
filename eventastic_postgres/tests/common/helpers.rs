@@ -8,15 +8,16 @@ use std::str::FromStr;
 use uuid::Uuid;
 
 pub async fn get_repository() -> PostgresRepository {
-    let connection_options =
-        PgConnectOptions::from_str("postgres://postgres:password@localhost/postgres")
-            .expect("Failed to parse connection options");
+    let host = std::env::var("POSTGRES_HOST").unwrap_or_else(|_| "localhost".to_string());
+    let connection_string = format!("postgres://postgres:password@{host}/postgres");
+    let connection_options = PgConnectOptions::from_str(connection_string.as_str())
+        .expect("Failed to parse connection options");
 
     let pool_options = PoolOptions::default();
 
     let repo = PostgresRepository::new(connection_options, pool_options)
         .await
-        .expect("Failedt to connect to postgres");
+        .expect("Failed to connect to postgres");
     repo.run_migrations()
         .await
         .expect("Failed to run migrations");

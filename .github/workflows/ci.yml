@@ -67,6 +67,9 @@ jobs:
         with:
           command: test
           args: --workspace --all-features
+        env:
+          # The hostname used to communicate with the PostgreSQL service container
+          POSTGRES_HOST: postgres
 
   formatting:
     name: Rustfmt Check
