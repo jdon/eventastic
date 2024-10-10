@@ -1,4 +1,8 @@
-use crate::repository::{RepositoryTransaction, Snapshot};
+use futures::TryStreamExt;
+use serde::de::DeserializeOwned;
+use serde::Serialize;
+
+use crate::repository::{RepositoryError, RepositoryTransaction, Snapshot};
 use crate::{
     aggregate::Aggregate,
     event::{Event, EventStoreEvent},
@@ -38,7 +42,7 @@ where
         T::SNAPSHOT_VERSION
     }
 
-    /// Returns the list of uncommitted, recorded Domain [Event]s from the [Context]
+    /// Returns the list of uncommitted, recorded Domain [Events] from the [Context]
     /// and resets the internal list to its default value.
     #[doc(hidden)]
     pub fn take_uncommitted_events(
@@ -61,7 +65,8 @@ where
     ///
     /// The method can return an error if the event to apply is unexpected
     /// given the current state of the Aggregate.
-    pub(crate) fn rehydrate_from(
+    #[doc(hidden)]
+    pub fn rehydrate_from(
         event: &EventStoreEvent<T::DomainEventId, T::DomainEvent>,
     ) -> Result<Context<T>, T::ApplyError> {
         Ok(Context {
@@ -79,7 +84,8 @@ where
     ///
     /// The method can return an error if the event to apply is unexpected
     /// given the current state of the Aggregate.
-    pub(crate) fn apply_rehydrated_event(
+    #[doc(hidden)]
+    pub fn apply_rehydrated_event(
         mut self,
         event: &EventStoreEvent<T::DomainEventId, T::DomainEvent>,
     ) -> Result<Context<T>, T::ApplyError> {
@@ -87,43 +93,6 @@ where
         debug_assert!(self.version == event.version);
         self.aggregate.apply(&event.event)?;
         Ok(self)
-    }
-
-    /// Checks if the event exists in the repository and that they are equal
-    pub(crate) async fn check_idempotency<R>(
-        &self,
-        repository: &mut R,
-        aggregate_id: &T::AggregateId,
-        event: &T::DomainEvent,
-    ) -> Result<bool, RecordError<T, <R as RepositoryTransaction<T>>::DbError>>
-    where
-        R: RepositoryTransaction<T>,
-    {
-        if let Some(saved_event) = repository
-            .get_event(aggregate_id, event.id())
-            .await
-            .map_err(RecordError::Repository)?
-        {
-            if saved_event.event != *event {
-                return Err(RecordError::IdempotencyError(
-                    saved_event.event,
-                    event.clone(),
-                ));
-            }
-            return Ok(true);
-        }
-
-        if let Some(existing_event) = self.uncommitted_events.iter().find(|e| e.id == *event.id()) {
-            if existing_event.event != *event {
-                return Err(RecordError::IdempotencyError(
-                    existing_event.event.clone(),
-                    event.clone(),
-                ));
-            }
-            return Ok(true);
-        };
-
-        Ok(false)
     }
 
     pub(crate) fn record_new(event: T::DomainEvent) -> Result<Context<T>, T::ApplyError> {
@@ -158,23 +127,8 @@ where
     ///
     /// The method can return an error if the event to apply is unexpected
     /// given the current state of the Aggregate.
-    pub async fn record_that<R>(
-        &mut self,
-        repository: &mut R,
-        event: T::DomainEvent,
-    ) -> Result<(), RecordError<T, <R as RepositoryTransaction<T>>::DbError>>
-    where
-        R: RepositoryTransaction<T>,
-    {
-        // Check if the event is has already been applied, if so let's ignore it.
-        if self
-            .check_idempotency(repository, self.aggregate_id(), &event)
-            .await?
-        {
-            return Ok(());
-        }
-
-        self.aggregate.apply(&event).map_err(RecordError::Apply)?;
+    pub fn record_that(&mut self, event: T::DomainEvent) -> Result<(), T::ApplyError> {
+        self.aggregate.apply(&event)?;
         self.version += 1;
 
         if let Some(mut side_effects) = self.aggregate.side_effects(&event) {
@@ -189,19 +143,131 @@ where
 
         Ok(())
     }
+
+    pub async fn save<R>(
+        &mut self,
+        transaction: &mut R,
+    ) -> Result<(), SaveError<T, <R as RepositoryTransaction<T>>::DbError>>
+    where
+        T: Serialize,
+        T::SideEffect: Serialize,
+        R: RepositoryTransaction<T>,
+    {
+        let events_to_commit = self.take_uncommitted_events();
+
+        let side_effects_to_commit = self.take_uncommitted_side_effects();
+
+        if events_to_commit.is_empty() {
+            return Ok(());
+        }
+
+        let aggregate_id = self.aggregate_id();
+
+        let snapshot_version = self.snapshot_version();
+        let snapshot_to_store = self.state();
+
+        let snapshot = Snapshot {
+            snapshot_version,
+            aggregate: snapshot_to_store.clone(),
+            version: self.version(),
+        };
+
+        // When we insert the events, it's possible that the events have already been inserted
+        // If that's the case, we need to check if the previously inserted events are the same as the ones we have
+        let inserted_event_ids = transaction
+            .append(aggregate_id, events_to_commit.clone())
+            .await
+            .map_err(SaveError::Repository)?;
+
+        if inserted_event_ids.len() != events_to_commit.len() {
+            // We failed to insert one or more of the events, it's possible that the events have already been inserted
+            // If that's the case, we need to check if the previously inserted events are the same as the ones we have
+            for event in events_to_commit {
+                if !inserted_event_ids.contains(&event.id) {
+                    if let Some(saved_event) = transaction
+                        .get_event(aggregate_id, event.id())
+                        .await
+                        .map_err(SaveError::Repository)?
+                    {
+                        if saved_event.event != event.event {
+                            return Err(SaveError::IdempotencyError(
+                                saved_event.event,
+                                event.event,
+                            ));
+                        }
+                    } else {
+                        // The not inserted event was not found in the event store, this happens if a different event was inserted with the same version and aggregate id
+                        // This is a fatal error, so return early
+                        return Err(SaveError::OptimisticConcurrency(
+                            aggregate_id.clone(),
+                            event.version,
+                        ));
+                    }
+                }
+            }
+        }
+
+        transaction
+            .store_snapshot(snapshot)
+            .await
+            .map_err(SaveError::Repository)?;
+
+        transaction
+            .insert_side_effects(side_effects_to_commit)
+            .await?;
+
+        Ok(())
+    }
+
+    pub async fn load<R>(
+        transaction: &mut R,
+        aggregate_id: &T::AggregateId,
+    ) -> Result<Context<T>, RepositoryError<T::ApplyError, T::DomainEventId, R::DbError>>
+    where
+        T: DeserializeOwned,
+        R: RepositoryTransaction<T>,
+    {
+        let snapshot = transaction.get_snapshot(aggregate_id).await;
+
+        let (context, version) = if let Some(snapshot) = snapshot {
+            if snapshot.snapshot_version == T::SNAPSHOT_VERSION {
+                // Snapshot is valid so return it
+                let context: Context<T> = snapshot.into();
+                // We want to get the next event in the stream
+                let version = context.version() + 1;
+                (Some(context), version)
+            } else {
+                (None, 0)
+            }
+        } else {
+            (None, 0)
+        };
+
+        let ctx = transaction
+            .stream_from(aggregate_id, version)
+            .map_err(RepositoryError::Repository)
+            .try_fold(context, |ctx: Option<Context<T>>, event| async move {
+                let new_ctx_result = match ctx {
+                    None => Context::rehydrate_from(&event),
+                    Some(ctx) => ctx.apply_rehydrated_event(&event),
+                };
+
+                let new_ctx = new_ctx_result.map_err(|e| RepositoryError::Apply(event.id, e))?;
+
+                Ok(Some(new_ctx))
+            })
+            .await?;
+
+        ctx.ok_or(RepositoryError::AggregateNotFound)
+    }
 }
 
 /// List of possible errors that can be returned by when recording events using [`Context::record_that`]
 #[derive(Debug, thiserror::Error)]
-pub enum RecordError<T, DE>
+pub enum SaveError<T, DE>
 where
     T: Aggregate,
 {
-    /// The [Event] failed to be applied to the [Aggregate].
-    /// This usually implies that the event is invalid for given state of the aggregate.
-    #[error("Failed to rehydrate aggregate from event stream. {0:?}")]
-    Apply(T::ApplyError),
-
     /// This error is returned when the event in the repository with the same ID
     /// doesn't have the same content.
     #[error("Idempotency Error. Saved event {0:?} does not equal {1:?}")]
@@ -211,6 +277,11 @@ where
     /// an unexpected error while streaming back the Aggregate's Event Stream.
     #[error("Event store failed while streaming events: {0}")]
     Repository(#[from] DE),
+
+    /// This error is returned when the Repository returns
+    /// when it fails to insert the event because the version already exists
+    #[error("Optimistic Concurrency Error Version {1} of aggregate {0:?} already exists")]
+    OptimisticConcurrency(T::AggregateId, u64),
 }
 
 impl<T> From<Snapshot<T>> for Context<T>

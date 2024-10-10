@@ -45,24 +45,24 @@ pub use root::*;
 /// using the [`Aggregate::apply`] method.
 ///
 /// More on Aggregates can be found here: `<https://www.dddcommunity.org/library/vernon_2011/>`
-pub trait Aggregate: Sized + Send + Sync + Clone {
+pub trait Aggregate: Sized + Clone {
     /// The current version of the snapshot to store.
     /// This number should be increased when a breaking change is made to the apply functions.
     const SNAPSHOT_VERSION: u64;
 
     /// The type used to uniquely identify the Aggregate.
-    type AggregateId: Send + Sync + Clone + Debug + Eq + PartialEq;
+    type AggregateId: Clone + Debug + Eq + PartialEq;
 
     /// The type of Domain Events that interest this Aggregate.
     /// Usually, this type should be an `enum`.
-    type DomainEvent: Send + Sync + Clone + Debug + Eq + PartialEq + Event<Self::DomainEventId>;
+    type DomainEvent: Clone + Debug + Eq + PartialEq + Event<Self::DomainEventId>;
 
     /// The type used to uniquely identify the a given domain event.
-    type DomainEventId: Send + Sync + Clone + Debug + Eq + PartialEq;
+    type DomainEventId: Clone + Debug + Eq + PartialEq;
 
     /// The error type that can be returned by [`Aggregate::apply`] when
     /// mutating the Aggregate state.
-    type ApplyError: Send + Sync + Debug;
+    type ApplyError: Debug;
 
     /// The type of side effect that this aggregate can produce.
     /// Usually, this type should be an `enum`.
@@ -92,11 +92,11 @@ pub trait Aggregate: Sized + Send + Sync + Clone {
     fn side_effects(&self, event: &Self::DomainEvent) -> Option<Vec<Self::SideEffect>>;
 }
 
-pub trait SideEffect: Send + Sync + Debug {
+pub trait SideEffect: Debug {
     /// The type used to uniquely identify this side effect.
-    type Id: Send + Sync + Debug + Clone;
+    type Id: Debug + Clone;
     /// The error type that can be returned when calling a [`SideEffectHandler::handle`]
-    type Error: Send + Sync + Debug;
+    type Error: Debug;
 
     /// Returns read access to the [`SideEffect::Id`]
     fn id(&self) -> &Self::Id;

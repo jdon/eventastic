@@ -89,7 +89,7 @@ impl PostgresRepository {
             let item_id = item.message.id().clone();
 
             match handler.handle(&item.message, item.retries).await {
-                Ok(_) => {
+                Ok(()) => {
                     tx.delete_outbox_item(item_id).await?;
                 }
                 Err((requeue, _)) => {

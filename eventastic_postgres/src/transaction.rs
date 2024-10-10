@@ -9,7 +9,6 @@ use eventastic::aggregate::Aggregate;
 use eventastic::aggregate::SideEffect;
 use eventastic::event::Event;
 use eventastic::event::EventStoreEvent;
-use eventastic::event::Stream;
 use eventastic::repository::RepositoryTransaction;
 use eventastic::repository::Snapshot;
 use futures::stream;
@@ -19,17 +18,28 @@ use serde::Serialize;
 use sqlx::query;
 use sqlx::query_as;
 use sqlx::types::JsonValue;
+use sqlx::types::Uuid;
 use sqlx::QueryBuilder;
+use sqlx::Row;
 use sqlx::{Postgres, Transaction};
-
 pub struct PostgresTransaction<'a> {
     pub(crate) inner: Transaction<'a, Postgres>,
 }
 
 impl<'a> PostgresTransaction<'a> {
     /// Commit the transaction to the db.
-    pub async fn commit(self) -> Result<(), sqlx::Error> {
-        self.inner.commit().await
+    pub async fn commit(self) -> Result<(), DbError> {
+        Ok(self.inner.commit().await?)
+    }
+
+    /// Rollback the transaction
+    pub async fn rollback(self) -> Result<(), DbError> {
+        Ok(self.inner.rollback().await?)
+    }
+
+    /// Get the inner postgres transaction
+    pub fn into_inner(self) -> Transaction<'a, Postgres> {
+        self.inner
     }
 
     /// Returns a batch of 10 outbox items
@@ -61,9 +71,7 @@ impl<'a> PostgresTransaction<'a> {
         for<'sql> T: sqlx::Decode<'sql, Postgres>
             + sqlx::Type<Postgres>
             + sqlx::Encode<'sql, Postgres>
-            + Unpin
-            + Send
-            + Sync,
+            + Unpin,
     {
         let _ = query("DELETE FROM outbox where id = $1")
             .bind(outbox_id)
@@ -87,7 +95,7 @@ impl<'a> PostgresTransaction<'a> {
     {
         let _ = query("UPDATE outbox set retries = $2, requeue = $3 where id = $1")
             .bind(outbox_item.message.id())
-            .bind(outbox_item.retries as i32)
+            .bind(i32::from(outbox_item.retries))
             .bind(outbox_item.requeue)
             .execute(&mut *self.inner)
             .await?;
@@ -110,28 +118,15 @@ where
     event: JsonValue,
 }
 
-struct FullEventRow<AId, EId>
-where
-    EId: Unpin,
-    AId: Unpin,
-{
-    event_id: EId,
-    version: i64,
-    aggregate_id: AId,
-    event: JsonValue,
-    created_at: DateTime<Utc>,
-}
-
 impl<EId> PartialEventRow<EId>
 where
-    EId: Debug + Send + Sync + Unpin,
+    EId: Debug + Send + Unpin,
 {
     fn to_event<Evt>(
         row: PartialEventRow<EId>,
     ) -> Result<eventastic::event::EventStoreEvent<EId, Evt>, DbError>
     where
-        Evt: Send + Sync + Clone + Eq,
-        for<'de> Evt: serde::Deserialize<'de>,
+        Evt: Send + Clone + Eq + DeserializeOwned,
     {
         let row_version = u64::try_from(row.version).map_err(|_| DbError::InvalidVersionNumber)?;
         match serde_json::from_value::<Evt>(row.event) {
@@ -155,48 +150,34 @@ struct OutBoxRow {
 }
 
 #[async_trait]
-impl<T, 'a> RepositoryTransaction<T> for PostgresTransaction<'a>
+impl<
+        S: SideEffect<Id = Uuid>,
+        T: Aggregate<DomainEventId = Uuid, AggregateId = Uuid, SideEffect = S>,
+        'a,
+    > RepositoryTransaction<T> for PostgresTransaction<'a>
 where
-    T: Aggregate + 'a + DeserializeOwned + Serialize,
-    <T as Aggregate>::DomainEvent: Serialize,
-    for<'sql> T::DomainEventId:
-        sqlx::Decode<'sql, Postgres> + sqlx::Type<Postgres> + sqlx::Encode<'sql, Postgres> + Unpin,
-    for<'sql> T::AggregateId:
-        sqlx::Decode<'sql, Postgres> + sqlx::Type<Postgres> + sqlx::Encode<'sql, Postgres> + Unpin,
-    for<'sql> <<T as eventastic::aggregate::Aggregate>::SideEffect as SideEffect>::Id:
-        sqlx::Decode<'sql, Postgres> + sqlx::Type<Postgres> + sqlx::Encode<'sql, Postgres> + Unpin,
-    for<'de> <T as Aggregate>::DomainEvent: serde::Deserialize<'de>,
+    T: Aggregate + 'a + DeserializeOwned + Serialize + Send + Sync,
+    S: 'a,
+    <T as Aggregate>::DomainEvent: Serialize + DeserializeOwned + Send + Sync,
+    <T as Aggregate>::SideEffect: Send + Sync,
 {
     /// The type of error that is returned from the database.
     type DbError = DbError;
-
-    /// Returns a stream of domain events.
-    fn stream(
-        &mut self,
-        id: &T::AggregateId,
-    ) -> Stream<T::DomainEventId, T::DomainEvent, Self::DbError> {
-        let res = query_as::<_, PartialEventRow<T::DomainEventId>>(
-            "
-            SELECT event, event_id, version
-            FROM events 
-            where aggregate_id = $1 ORDER BY version ASC",
-        )
-        .bind(id.clone())
-        .fetch(&mut *self.inner);
-
-        res.map(|row| match row {
-            Ok(row) => PartialEventRow::to_event(row),
-            Err(e) => Err(DbError::DbError(e)),
-        })
-        .boxed()
-    }
 
     /// Returns a stream of domain events.
     fn stream_from(
         &mut self,
         id: &T::AggregateId,
         version: u64,
-    ) -> Stream<T::DomainEventId, T::DomainEvent, Self::DbError> {
+    ) -> impl futures::Stream<
+        Item = std::result::Result<
+            eventastic::event::EventStoreEvent<
+                <T as eventastic::aggregate::Aggregate>::DomainEventId,
+                <T as eventastic::aggregate::Aggregate>::DomainEvent,
+            >,
+            <Self as eventastic::repository::RepositoryTransaction<T>>::DbError,
+        >,
+    > {
         let Ok(version) = i64::try_from(version) else {
             return stream::iter(vec![Err(DbError::InvalidVersionNumber)]).boxed();
         };
@@ -207,7 +188,7 @@ where
                 FROM events 
                 where aggregate_id = $1 AND version >= $2 ORDER BY version ASC",
         )
-        .bind(id.clone())
+        .bind(*id)
         .bind(version)
         .fetch(&mut *self.inner);
 
@@ -250,50 +231,43 @@ where
         &mut self,
         id: &T::AggregateId,
         events: Vec<EventStoreEvent<T::DomainEventId, T::DomainEvent>>,
-    ) -> Result<(), Self::DbError> {
+    ) -> Result<Vec<T::DomainEventId>, Self::DbError> {
         if events.is_empty() {
-            return Ok(());
+            return Ok(Vec::new());
         }
 
-        let events = events
-            .into_iter()
-            .map(|event| {
-                let event_id = event.id().clone();
-                let version = event.version;
+        let mut event_ids_to_insert: Vec<T::DomainEventId> = Vec::with_capacity(events.len());
+        let mut versions_to_insert: Vec<i64> = Vec::with_capacity(events.len());
+        let mut aggregate_ids_to_insert: Vec<T::AggregateId> = Vec::with_capacity(events.len());
+        let mut events_to_insert: Vec<serde_json::Value> = Vec::with_capacity(events.len());
+        let mut created_ats_to_insert: Vec<DateTime<Utc>> = Vec::with_capacity(events.len());
 
-                let version = i64::try_from(version).map_err(|_| DbError::InvalidVersionNumber)?;
+        for event in events {
+            let event_id = *event.id();
+            let version = event.version;
 
-                match serde_json::to_value(event.event).map_err(DbError::SerializationError) {
-                    Ok(s) => Ok(FullEventRow {
-                        event_id,
-                        version,
-                        aggregate_id: id.clone(),
-                        event: s,
-                        created_at: Utc::now(),
-                    }),
-                    Err(e) => Err(e),
+            let version = i64::try_from(version).map_err(|_| DbError::InvalidVersionNumber)?;
+
+            match serde_json::to_value(event.event) {
+                Ok(s) => {
+                    event_ids_to_insert.push(event_id);
+                    versions_to_insert.push(version);
+                    aggregate_ids_to_insert.push(*id);
+                    events_to_insert.push(s);
+                    created_ats_to_insert.push(Utc::now());
                 }
-            })
-            .collect::<Result<Vec<FullEventRow<T::AggregateId, T::DomainEventId>>, Self::DbError>>(
-            )?;
+                Err(e) => return Err(e.into()),
+            }
+        }
 
-        let mut query_builder: QueryBuilder<Postgres> = QueryBuilder::new(
-            "INSERT INTO events(event_id, version, aggregate_id, event, created_at) ",
-        );
+        let inserted_ids:Result<Vec<Uuid>, sqlx::Error> = sqlx::query(
+            "INSERT INTO events(event_id, version, aggregate_id, event, created_at) 
+            SELECT * FROM UNNEST($1::uuid[], $2::bigint[], $3::uuid[], $4::jsonb[], $5::timestamptz[])
+            ON CONFLICT DO NOTHING returning event_id",
+        ).bind(&event_ids_to_insert[..]).bind(&versions_to_insert[..]).bind(&aggregate_ids_to_insert[..]).bind(&events_to_insert[..]).bind(&created_ats_to_insert[..])
+        .fetch_all(&mut *self.inner).await?.into_iter().map(|row|row.try_get(0)).collect();
 
-        query_builder.push_values(events, |mut b, event| {
-            b.push_bind(event.event_id)
-                .push_bind(event.version)
-                .push_bind(event.aggregate_id)
-                .push_bind(event.event)
-                .push_bind(event.created_at);
-        });
-
-        let query = query_builder.build();
-
-        query.execute(&mut *self.inner).await?;
-
-        Ok(())
+        Ok(inserted_ids?)
     }
 
     /// Returns a snapshot of the aggregate in the database
@@ -314,7 +288,7 @@ where
     where
         T: Serialize,
     {
-        let aggregated_id = snapshot.aggregate.aggregate_id().clone();
+        let aggregated_id = *snapshot.aggregate.aggregate_id();
         let json_value = serde_json::to_value(snapshot).map_err(DbError::SerializationError)?;
         query("INSERT INTO snapshots(aggregate_id, snapshot, created_at) VALUES ($1, $2, $3) ON CONFLICT (aggregate_id) DO UPDATE SET snapshot = $2, created_at = $3")
             .bind(aggregated_id)
@@ -346,7 +320,7 @@ where
             .into_iter()
             .map(|item| {
                 Ok((
-                    item.id().clone(),
+                    *item.id(),
                     serde_json::to_value(item).map_err(DbError::SerializationError)?,
                 ))
             })
@@ -364,10 +338,5 @@ where
 
         query.execute(&mut *self.inner).await?;
         Ok(())
-    }
-
-    /// Commit the transaction to the db.
-    async fn commit(self) -> Result<(), Self::DbError> {
-        Ok(self.commit().await?)
     }
 }
