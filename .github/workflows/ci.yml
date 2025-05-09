@@ -43,10 +43,15 @@ jobs:
       # Label used to access the service container
       postgres:
         # Docker Hub image
-        image: postgres
+        image: postgres:latest
         # Provide the password for postgres
         env:
           POSTGRES_PASSWORD: password
+          POSTGRES_USER: postgres
+          POSTGRES_DB: postgres
+        # Map port 5432 on the container to 5432 on the host
+        ports:
+          - 5432:5432
         # Set health checks to wait until postgres has started
         options: >-
           --health-cmd pg_isready
@@ -70,6 +75,10 @@ jobs:
         env:
           # The hostname used to communicate with the PostgreSQL service container
           POSTGRES_HOST: postgres
+          # Add database connection details
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: postgres
 
   formatting:
     name: Rustfmt Check
