@@ -73,8 +73,8 @@ jobs:
           command: test
           args: --workspace --all-features
         env:
-          # The hostname used to communicate with the PostgreSQL service container
-          POSTGRES_HOST: postgres
+          # Use localhost instead of postgres hostname
+          POSTGRES_HOST: localhost
           # Add database connection details
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: password
