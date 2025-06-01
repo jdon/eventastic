@@ -146,7 +146,7 @@ where
         .bind(event_id)
         .fetch_optional(&mut *self.inner)
         .await?
-        .map(|row| PartialEventRow::to_event(row))
+        .map(PartialEventRow::to_event)
         .transpose()
     }
 

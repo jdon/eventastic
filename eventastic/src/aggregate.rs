@@ -98,4 +98,3 @@ pub trait SideEffect {
     /// Returns read access to the [`SideEffect::Id`]
     fn id(&self) -> &Self::Id;
 }
-

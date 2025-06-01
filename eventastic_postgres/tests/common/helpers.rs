@@ -160,22 +160,20 @@ impl AccountBuilder {
             },
         }
     }
-    
+
     pub fn with_email(mut self, new_email: String) -> Self {
-        if let AccountEvent::Open {
-            ref mut email,
-            ..
-        } = self.open_event {
+        if let AccountEvent::Open { ref mut email, .. } = self.open_event {
             *email = new_email;
         }
         self
     }
-    
+
     pub fn with_balance(mut self, balance: i64) -> Self {
         if let AccountEvent::Open {
             ref mut starting_balance,
             ..
-        } = self.open_event {
+        } = self.open_event
+        {
             *starting_balance = balance;
         }
         self
@@ -243,27 +241,35 @@ impl AccountBuilder {
     }
 }
 
-pub async fn get_side_effect(id: uuid::Uuid) -> Option<(super::test_aggregate::SideEffects, i32, bool)> {
+pub async fn get_side_effect(
+    id: uuid::Uuid,
+) -> Option<(super::test_aggregate::SideEffects, i32, bool)> {
     let repository = get_repository().await;
     let transaction = repository
         .begin_transaction()
         .await
         .expect("Failed to begin transaction");
-    
+
     let row = sqlx::query("SELECT id, message, retries, requeue FROM outbox WHERE id = $1")
         .bind(id)
         .fetch_optional(&mut *transaction.into_inner())
         .await
         .expect("Failed to query outbox table");
-    
+
     if let Some(row) = row {
-        let message_json: serde_json::Value = row.try_get("message").expect("Failed to get message from row");
-        let retries: i32 = row.try_get("retries").expect("Failed to get retries from row");
-        let requeue: bool = row.try_get("requeue").expect("Failed to get requeue from row");
-        
-        let side_effect: super::test_aggregate::SideEffects = 
+        let message_json: serde_json::Value = row
+            .try_get("message")
+            .expect("Failed to get message from row");
+        let retries: i32 = row
+            .try_get("retries")
+            .expect("Failed to get retries from row");
+        let requeue: bool = row
+            .try_get("requeue")
+            .expect("Failed to get requeue from row");
+
+        let side_effect: super::test_aggregate::SideEffects =
             serde_json::from_value(message_json).expect("Failed to deserialize side effect");
-        
+
         Some((side_effect, retries, requeue))
     } else {
         None
