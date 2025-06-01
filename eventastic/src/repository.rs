@@ -1,6 +1,5 @@
 use async_trait::async_trait;
 use futures::Stream;
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::fmt::Debug;
 
 use crate::{aggregate::Aggregate, event::EventStoreEvent};
@@ -27,7 +26,7 @@ pub enum RepositoryError<E, EventId, DE> {
 }
 
 /// A snap of the [`Aggregate`] that is persisted in the db.
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Debug, Clone)]
 pub struct Snapshot<T>
 where
     T: Aggregate,
@@ -40,13 +39,7 @@ where
 /// A RepositoryTransaction is an object that allows to load and save
 /// an [`Aggregate`] from and to a persistent data store
 #[async_trait]
-pub trait RepositoryTransaction<T>
-where
-    T: Aggregate,
-    T::AggregateId: Clone,
-    T::ApplyError: Debug,
-    Self: Sized,
-{
+pub trait RepositoryTransaction<T: Aggregate> {
     /// The error type returned by the Store during a [`RepositoryTransaction::stream`] and [`RepositoryTransaction::append`] call.
     type DbError;
 
@@ -75,33 +68,31 @@ where
         Self::DbError,
     >;
 
+    /// Retrieves the latest version of the Aggregate from the Event Store.
+    /// This method must check that the snapshot version is correct
+    #[doc(hidden)]
+    async fn get_snapshot(
+        &mut self,
+        id: &T::AggregateId,
+    ) -> Result<Option<Snapshot<T>>, Self::DbError>;
+
     /// Appends new Domain Events to the specified Event Stream.
     ///
-    /// Returns a list of the Domain Event Ids that were successfully appended.
-    /// If
+    /// Returns a list of the Domain Event Ids that were successfully stored.
     #[doc(hidden)]
-    async fn append(
+    async fn store_events(
         &mut self,
         id: &T::AggregateId,
         events: Vec<EventStoreEvent<T::DomainEventId, T::DomainEvent>>,
     ) -> Result<Vec<T::DomainEventId>, Self::DbError>;
 
     #[doc(hidden)]
-    async fn get_snapshot(&mut self, id: &T::AggregateId) -> Option<Snapshot<T>>
-    where
-        T: DeserializeOwned;
-
-    #[doc(hidden)]
-    async fn store_snapshot(&mut self, snapshot: Snapshot<T>) -> Result<(), Self::DbError>
-    where
-        T: Serialize;
+    async fn store_snapshot(&mut self, snapshot: Snapshot<T>) -> Result<(), Self::DbError>;
 
     /// Insert side effects in to the repository
     #[doc(hidden)]
-    async fn insert_side_effects(
+    async fn store_side_effects(
         &mut self,
-        outbox_item: Vec<T::SideEffect>,
-    ) -> Result<(), Self::DbError>
-    where
-        T::SideEffect: Serialize;
+        side_effects: Vec<T::SideEffect>,
+    ) -> Result<(), Self::DbError>;
 }

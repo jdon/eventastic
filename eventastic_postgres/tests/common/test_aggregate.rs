@@ -1,7 +1,5 @@
-use async_trait::async_trait;
 use eventastic::aggregate::Aggregate;
 use eventastic::aggregate::SideEffect;
-use eventastic::aggregate::SideEffectHandler;
 use eventastic::event::Event;
 use serde::Deserialize;
 use serde::Serialize;
@@ -70,38 +68,11 @@ pub enum SideEffects {
 impl SideEffect for SideEffects {
     /// The type used to uniquely identify this side effect.
     type Id = Uuid;
-    /// The error type that can be returned when calling a [`SideEffectHandler::handle`]
-    type Error = SideEffectError;
 
     fn id(&self) -> &Self::Id {
         match self {
             SideEffects::PublishMessage { id, .. } | SideEffects::SendEmail { id, .. } => id,
         }
-    }
-}
-
-// Define our side effect errors
-#[derive(Error, Debug)]
-pub enum SideEffectError {
-    #[error("Failed to publish message")]
-    PublishMessageError,
-}
-
-pub struct SideEffectContext {}
-
-#[async_trait]
-impl SideEffectHandler for SideEffectContext {
-    type SideEffect = SideEffects;
-
-    /// Handle a side effect
-    /// If Ok(()) is returned, the side effect is complete and it will be deleted from the repository.
-    /// If Err((true, Error)) is returned, the side effect be will requeued
-    /// if Err((false, Error)) is returned, the side effect won't be requeued
-    async fn handle(&self, msg: &SideEffects, retires: u16) -> Result<(), (bool, SideEffectError)> {
-        println!("Got side effect message {msg:?} with retires {retires}");
-        let requeue = retires < 3;
-
-        Err((requeue, SideEffectError::PublishMessageError))
     }
 }
 
@@ -191,7 +162,11 @@ impl Aggregate for Account {
                     "Account opened with id {account_id} and starting balance {starting_balance}"
                 ),
             }),
-            AccountEvent::Add { .. } | AccountEvent::Remove { .. } => None,
+            AccountEvent::Add { event_id, amount } => Some(SideEffects::PublishMessage {
+                id: *event_id,
+                message: amount.to_string(),
+            }),
+            AccountEvent::Remove { .. } => None,
         };
         side_effect.map(|s| vec![s])
     }

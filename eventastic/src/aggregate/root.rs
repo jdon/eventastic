@@ -1,6 +1,4 @@
 use futures::TryStreamExt;
-use serde::de::DeserializeOwned;
-use serde::Serialize;
 
 use crate::repository::{RepositoryError, RepositoryTransaction, Snapshot};
 use crate::{
@@ -97,24 +95,26 @@ where
 
     pub(crate) fn record_new(event: T::DomainEvent) -> Result<Context<T>, T::ApplyError> {
         let aggregate = T::apply_new(&event)?;
-        let mut uncommitted_side_effects = vec![];
 
-        if let Some(mut side_effects) = aggregate.side_effects(&event) {
-            uncommitted_side_effects.append(&mut side_effects);
-        }
-
-        let root = Context {
+        // Create the event store event first
+        let event_store_event = EventStoreEvent {
+            id: event.id().clone(),
             version: 0,
-            aggregate,
-            uncommitted_events: vec![EventStoreEvent {
-                id: event.id().clone(),
-                version: 0,
-                event,
-            }],
-            uncommitted_side_effects,
+            event,
         };
 
-        Ok(root)
+        // Get side effects (if any)
+        let uncommitted_side_effects = aggregate
+            .side_effects(&event_store_event.event)
+            .unwrap_or_default();
+
+        // Create the context
+        Ok(Context {
+            version: 0,
+            aggregate,
+            uncommitted_events: vec![event_store_event],
+            uncommitted_side_effects,
+        })
     }
     /// Returns read access to the [Aggregate] state.
     pub fn state(&self) -> &T {
@@ -131,8 +131,8 @@ where
         self.aggregate.apply(&event)?;
         self.version += 1;
 
-        if let Some(mut side_effects) = self.aggregate.side_effects(&event) {
-            self.uncommitted_side_effects.append(&mut side_effects);
+        if let Some(side_effects) = self.aggregate.side_effects(&event) {
+            self.uncommitted_side_effects.extend(side_effects);
         }
 
         self.uncommitted_events.push(EventStoreEvent {
@@ -149,17 +149,15 @@ where
         transaction: &mut R,
     ) -> Result<(), SaveError<T, <R as RepositoryTransaction<T>>::DbError>>
     where
-        T: Serialize,
-        T::SideEffect: Serialize,
         R: RepositoryTransaction<T>,
     {
         let events_to_commit = self.take_uncommitted_events();
 
-        let side_effects_to_commit = self.take_uncommitted_side_effects();
-
         if events_to_commit.is_empty() {
             return Ok(());
         }
+
+        let side_effects_to_commit = self.take_uncommitted_side_effects();
 
         let aggregate_id = self.aggregate_id();
 
@@ -175,7 +173,7 @@ where
         // When we insert the events, it's possible that the events have already been inserted
         // If that's the case, we need to check if the previously inserted events are the same as the ones we have
         let inserted_event_ids = transaction
-            .append(aggregate_id, events_to_commit.clone())
+            .store_events(aggregate_id, events_to_commit.clone())
             .await
             .map_err(SaveError::Repository)?;
 
@@ -213,7 +211,7 @@ where
             .map_err(SaveError::Repository)?;
 
         transaction
-            .insert_side_effects(side_effects_to_commit)
+            .store_side_effects(side_effects_to_commit)
             .await?;
 
         Ok(())
@@ -224,37 +222,33 @@ where
         aggregate_id: &T::AggregateId,
     ) -> Result<Context<T>, RepositoryError<T::ApplyError, T::DomainEventId, R::DbError>>
     where
-        T: DeserializeOwned,
         R: RepositoryTransaction<T>,
     {
-        let snapshot = transaction.get_snapshot(aggregate_id).await;
+        let snapshot = transaction.get_snapshot(aggregate_id).await?;
 
-        let (context, version) = if let Some(snapshot) = snapshot {
-            if snapshot.snapshot_version == T::SNAPSHOT_VERSION {
-                // Snapshot is valid so return it
-                let context: Context<T> = snapshot.into();
-                // We want to get the next event in the stream
-                let version = context.version() + 1;
-                (Some(context), version)
-            } else {
-                (None, 0)
-            }
-        } else {
-            (None, 0)
-        };
+        let (context, version) = snapshot
+            .map(|s| {
+                (
+                    Some(Context {
+                        aggregate: s.aggregate,
+                        version: s.version,
+                        uncommitted_events: Vec::new(),
+                        uncommitted_side_effects: Vec::new(),
+                    }),
+                    s.version + 1, // Start from next event
+                )
+            })
+            .unwrap_or((None, 0));
 
         let ctx = transaction
             .stream_from(aggregate_id, version)
             .map_err(RepositoryError::Repository)
             .try_fold(context, |ctx: Option<Context<T>>, event| async move {
-                let new_ctx_result = match ctx {
-                    None => Context::rehydrate_from(&event),
-                    Some(ctx) => ctx.apply_rehydrated_event(&event),
-                };
-
-                let new_ctx = new_ctx_result.map_err(|e| RepositoryError::Apply(event.id, e))?;
-
-                Ok(Some(new_ctx))
+                match ctx {
+                    None => Context::rehydrate_from(&event).map(Some),
+                    Some(ctx) => ctx.apply_rehydrated_event(&event).map(Some),
+                }
+                .map_err(|e| RepositoryError::Apply(event.id, e))
             })
             .await?;
 
@@ -282,20 +276,6 @@ where
     /// when it fails to insert the event because the version already exists
     #[error("Optimistic Concurrency Error Version {1} of aggregate {0:?} already exists")]
     OptimisticConcurrency(T::AggregateId, u64),
-}
-
-impl<T> From<Snapshot<T>> for Context<T>
-where
-    T: Aggregate,
-{
-    fn from(value: Snapshot<T>) -> Self {
-        Self {
-            aggregate: value.aggregate,
-            version: value.version,
-            uncommitted_events: Vec::new(),
-            uncommitted_side_effects: Vec::new(),
-        }
-    }
 }
 
 pub trait Root<T>

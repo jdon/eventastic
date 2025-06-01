@@ -1,13 +1,11 @@
 use std::str::FromStr;
 
-use async_trait::async_trait;
 use eventastic::aggregate::Aggregate;
 use eventastic::aggregate::Context;
 
 use eventastic::aggregate::Root;
 use eventastic::aggregate::SaveError;
 use eventastic::aggregate::SideEffect;
-use eventastic::aggregate::SideEffectHandler;
 use eventastic::event::Event;
 use eventastic_postgres::PostgresRepository;
 
@@ -27,23 +25,14 @@ async fn main() -> Result<(), anyhow::Error> {
 
     repository.run_migrations().await?;
 
-    // Run our side effects handler in a background task
-    tokio::spawn(async {
-        let repository = get_repository().await;
-
-        let _ = repository
-            .start_outbox(SideEffectContext {}, std::time::Duration::from_secs(5))
-            .await;
-    });
-
     // Start transaction
     let mut transaction = repository.begin_transaction().await?;
 
-    let account_id = Uuid::now_v7();
+    let account_id = Uuid::new_v4();
 
-    let event_id = Uuid::now_v7();
+    let event_id = Uuid::new_v4();
 
-    let add_event_id = Uuid::now_v7();
+    let add_event_id = Uuid::new_v4();
 
     // Open a bank account
     let event = AccountEvent::Open {
@@ -112,7 +101,7 @@ async fn main() -> Result<(), anyhow::Error> {
 
     // Apply a new add event and save to our db. This should have version number 2
     let add_event = AccountEvent::Add {
-        event_id: Uuid::now_v7(),
+        event_id: Uuid::new_v4(),
         amount: 456,
     };
 
@@ -125,7 +114,7 @@ async fn main() -> Result<(), anyhow::Error> {
     // This will attempt to apply a different event with a version number 2
     // This should fail with an optimistic concurrency error
     let add_event = AccountEvent::Add {
-        event_id: Uuid::now_v7(),
+        event_id: Uuid::new_v4(),
         amount: 789,
     };
 
@@ -209,40 +198,11 @@ pub enum SideEffects {
 impl SideEffect for SideEffects {
     /// The type used to uniquely identify this side effect.
     type Id = Uuid;
-    /// The error type that can be returned when calling a [`SideEffectHandler::handle`]
-    type Error = SideEffectError;
 
     fn id(&self) -> &Self::Id {
         match self {
             SideEffects::PublishMessage { id, .. } | SideEffects::SendEmail { id, .. } => id,
         }
-    }
-}
-
-// Define our side effect errors
-#[derive(Error, Debug)]
-pub enum SideEffectError {
-    #[error("Failed to publish message")]
-    PublishMessageError,
-    #[error("Failed to send email")]
-    SendEmailError,
-}
-
-pub struct SideEffectContext {}
-
-#[async_trait]
-impl SideEffectHandler for SideEffectContext {
-    type SideEffect = SideEffects;
-
-    /// Handle a side effect
-    /// If Ok(()) is returned, the side effect is complete and it will be deleted from the repository.
-    /// If Err((true, Error)) is returned, the side effect be will requeued
-    /// if Err((false, Error)) is returned, the side effect won't be requeued
-    async fn handle(&self, msg: &SideEffects, retires: u16) -> Result<(), (bool, SideEffectError)> {
-        println!("Got side effect message {msg:?} with retires {retires}");
-        let requeue = retires < 3;
-
-        Err((requeue, SideEffectError::PublishMessageError))
     }
 }
 

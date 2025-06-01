@@ -26,9 +26,9 @@ pub async fn get_repository() -> PostgresRepository {
 
 #[derive(serde::Deserialize, Debug, Clone, serde::Serialize)]
 pub struct SavedSnapshot {
-    pub version: i32,
+    pub version: i64,
     pub aggregate: Account,
-    pub snapshot_version: i32,
+    pub snapshot_version: i64,
 }
 
 pub async fn get_account_snapshot(account_id: Uuid) -> Option<SavedSnapshot> {
@@ -39,19 +39,25 @@ pub async fn get_account_snapshot(account_id: Uuid) -> Option<SavedSnapshot> {
         .await
         .expect("Failed to begin transaction");
 
-    let row = sqlx::query("SELECT snapshot FROM snapshots where aggregate_id = $1")
-        .bind(account_id)
-        .fetch_optional(&mut *transaction.into_inner())
-        .await
-        .expect("Failed to fetch snapshot");
+    let row = sqlx::query(
+        "SELECT aggregate, version, snapshot_version FROM snapshots where aggregate_id = $1",
+    )
+    .bind(account_id)
+    .fetch_optional(&mut *transaction.into_inner())
+    .await
+    .expect("Failed to fetch snapshot");
 
     row.map(|row| {
-        let snapshot: Result<serde_json::Value, _> = row.try_get("snapshot");
-        snapshot
+        let aggregate: Result<serde_json::Value, _> = row.try_get("aggregate");
+        let version: Result<i64, _> = row.try_get("version");
+        let snapshot_version: Result<i64, _> = row.try_get("snapshot_version");
+
+        SavedSnapshot {
+            aggregate: serde_json::from_value(aggregate.unwrap()).unwrap(),
+            version: version.unwrap(),
+            snapshot_version: snapshot_version.unwrap(),
+        }
     })
-    .transpose()
-    .expect("Failed to deserialize snapshot")
-    .map(|snapshot| serde_json::from_value(snapshot).expect("Failed to deserialize snapshot"))
 }
 
 pub async fn replace_account_snapshot(account_id: Uuid, snapshot: SavedSnapshot) {
@@ -64,8 +70,10 @@ pub async fn replace_account_snapshot(account_id: Uuid, snapshot: SavedSnapshot)
 
     let mut pg_transaction = transaction.into_inner();
 
-    let row = sqlx::query("UPDATE snapshots set snapshot = $1 where aggregate_id = $2")
-        .bind(serde_json::to_value(&snapshot).expect("Failed to serialize snapshot"))
+    let row = sqlx::query("UPDATE snapshots set aggregate = $1, snapshot_version = $2, version = $3 where aggregate_id = $4")
+        .bind(serde_json::to_value(&snapshot.aggregate).expect("Failed to serialize snapshot"))
+        .bind(snapshot.snapshot_version)
+        .bind(snapshot.version)
         .bind(account_id)
         .execute(&mut *pg_transaction)
         .await
@@ -140,17 +148,37 @@ pub struct AccountBuilder {
 
 impl AccountBuilder {
     pub fn new() -> Self {
-        let account_id = Uuid::now_v7();
+        let account_id = Uuid::new_v4();
         Self {
             account_id,
             events: Vec::new(),
             open_event: AccountEvent::Open {
-                event_id: Uuid::now_v7(),
+                event_id: Uuid::new_v4(),
                 account_id,
-                starting_balance: 21,
+                starting_balance: 0,
                 email: "user@example.com".into(),
             },
         }
+    }
+    
+    pub fn with_email(mut self, new_email: String) -> Self {
+        if let AccountEvent::Open {
+            ref mut email,
+            ..
+        } = self.open_event {
+            *email = new_email;
+        }
+        self
+    }
+    
+    pub fn with_balance(mut self, balance: i64) -> Self {
+        if let AccountEvent::Open {
+            ref mut starting_balance,
+            ..
+        } = self.open_event {
+            *starting_balance = balance;
+        }
+        self
     }
 
     pub fn with_open_event(mut self, event: AccountEvent) -> Self {
@@ -160,7 +188,7 @@ impl AccountBuilder {
 
     pub fn with_add_event(mut self, amount: i64) -> Self {
         let add_event = AccountEvent::Add {
-            event_id: Uuid::now_v7(),
+            event_id: Uuid::new_v4(),
             amount,
         };
         self.events.push(add_event);
@@ -169,7 +197,7 @@ impl AccountBuilder {
 
     pub fn with_remove_event(mut self, amount: i64) -> Self {
         let remove_event = AccountEvent::Remove {
-            event_id: Uuid::now_v7(),
+            event_id: Uuid::new_v4(),
             amount,
         };
         self.events.push(remove_event);
@@ -212,5 +240,32 @@ impl AccountBuilder {
             .expect("Failed to commit transaction");
 
         account
+    }
+}
+
+pub async fn get_side_effect(id: uuid::Uuid) -> Option<(super::test_aggregate::SideEffects, i32, bool)> {
+    let repository = get_repository().await;
+    let transaction = repository
+        .begin_transaction()
+        .await
+        .expect("Failed to begin transaction");
+    
+    let row = sqlx::query("SELECT id, message, retries, requeue FROM outbox WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&mut *transaction.into_inner())
+        .await
+        .expect("Failed to query outbox table");
+    
+    if let Some(row) = row {
+        let message_json: serde_json::Value = row.try_get("message").expect("Failed to get message from row");
+        let retries: i32 = row.try_get("retries").expect("Failed to get retries from row");
+        let requeue: bool = row.try_get("requeue").expect("Failed to get requeue from row");
+        
+        let side_effect: super::test_aggregate::SideEffects = 
+            serde_json::from_value(message_json).expect("Failed to deserialize side effect");
+        
+        Some((side_effect, retries, requeue))
+    } else {
+        None
     }
 }

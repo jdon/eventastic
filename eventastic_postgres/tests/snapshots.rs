@@ -1,8 +1,8 @@
 mod common;
 
 use common::helpers::{
-    delete_snapshot, get_account_snapshot, get_repository, load_account, replace_account_snapshot,
-    AccountBuilder,
+    AccountBuilder, delete_snapshot, get_account_snapshot, get_repository, load_account,
+    replace_account_snapshot,
 };
 use common::test_aggregate::AccountEvent;
 use uuid::Uuid;
@@ -42,7 +42,7 @@ pub async fn snapshots_are_saved_automatically() {
 }
 
 #[tokio::test]
-pub async fn aggregate_are_rebuilt_if_snapshots_are_missing() {
+pub async fn aggregate_is_rebuilt_if_snapshots_are_missing() {
     // Arrange
     let account = AccountBuilder::new()
         .with_add_event(100)
@@ -89,7 +89,7 @@ pub async fn snapshots_are_successfully_saved_when_new_event_is_applied() {
 
     account
         .record_that(AccountEvent::Add {
-            event_id: Uuid::now_v7(),
+            event_id: Uuid::new_v4(),
             amount: 10,
         })
         .expect("Failed to apply event");

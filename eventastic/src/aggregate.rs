@@ -30,7 +30,6 @@ use std::fmt::Debug;
 
 mod root;
 
-use async_trait::async_trait;
 pub use root::*;
 
 /// An Aggregate represents a Domain Model that, through an Aggregate [Root],
@@ -57,12 +56,12 @@ pub trait Aggregate: Sized + Clone {
     /// Usually, this type should be an `enum`.
     type DomainEvent: Clone + Debug + Eq + PartialEq + Event<Self::DomainEventId>;
 
-    /// The type used to uniquely identify the a given domain event.
+    /// The type used to uniquely identify the given domain event.
     type DomainEventId: Clone + Debug + Eq + PartialEq;
 
     /// The error type that can be returned by [`Aggregate::apply`] when
     /// mutating the Aggregate state.
-    type ApplyError: Debug;
+    type ApplyError;
 
     /// The type of side effect that this aggregate can produce.
     /// Usually, this type should be an `enum`.
@@ -92,30 +91,11 @@ pub trait Aggregate: Sized + Clone {
     fn side_effects(&self, event: &Self::DomainEvent) -> Option<Vec<Self::SideEffect>>;
 }
 
-pub trait SideEffect: Debug {
+pub trait SideEffect {
     /// The type used to uniquely identify this side effect.
-    type Id: Debug + Clone;
-    /// The error type that can be returned when calling a [`SideEffectHandler::handle`]
-    type Error: Debug;
+    type Id;
 
     /// Returns read access to the [`SideEffect::Id`]
     fn id(&self) -> &Self::Id;
 }
 
-#[async_trait]
-pub trait SideEffectHandler {
-    type SideEffect: SideEffect;
-
-    /// Handles a side effect
-    ///
-    /// If Ok(()) is returned, the side effect is complete and it will be deleted from the repository.
-    ///
-    /// If Err((true, Error)) is returned, the side effect be will requeued
-    ///
-    /// if Err((false, Error)) is returned, the side effect won't be requeued
-    async fn handle(
-        &self,
-        msg: &Self::SideEffect,
-        retires: u16,
-    ) -> Result<(), (bool, <Self::SideEffect as SideEffect>::Error)>;
-}

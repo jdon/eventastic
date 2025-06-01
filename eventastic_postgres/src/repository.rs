@@ -1,7 +1,7 @@
 use crate::PostgresTransaction;
 use sqlx::{
-    postgres::{PgConnectOptions, PgPoolOptions},
     Pool, Postgres,
+    postgres::{PgConnectOptions, PgPoolOptions},
 };
 
 #[derive(Clone)]

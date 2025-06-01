@@ -10,7 +10,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS aggregate_version ON events (version, aggregat
 
 CREATE TABLE if not exists snapshots (
   aggregate_id uuid PRIMARY KEY,
-  snapshot jsonb NOT NULL,
+  aggregate jsonb NOT NULL,
+  version bigint NOT NULL,
+  snapshot_version bigint NOT NULL,
   created_at timestamptz NOT NULL
 );
 

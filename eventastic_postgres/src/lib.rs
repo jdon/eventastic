@@ -1,4 +1,3 @@
-mod outbox;
 mod repository;
 mod transaction;
 use async_trait::async_trait;
@@ -7,7 +6,7 @@ use eventastic::{
     repository::RepositoryError,
 };
 pub use repository::PostgresRepository;
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 use sqlx::types::Uuid;
 use thiserror::Error;
 pub use transaction::PostgresTransaction;
@@ -20,6 +19,8 @@ pub enum DbError {
     SerializationError(#[from] serde_json::Error),
     #[error("Invalid Version Number")]
     InvalidVersionNumber,
+    #[error("Invalid Snapshot Version number")]
+    InvalidSnapshotVersion,
     #[error("Optimistic Concurrency Error")]
     OptimisticConcurrencyError,
 }
@@ -38,35 +39,34 @@ impl From<sqlx::Error> for DbError {
 }
 
 #[async_trait]
-pub trait RootExt<
-    S: SideEffect<Id = Uuid> + Send + Sync + 'static,
+pub trait RootExt<S, T>
+where
+    S: SideEffect<Id = Uuid> + Serialize + Send + Sync + 'static,
     T: Aggregate<AggregateId = Uuid, DomainEventId = Uuid, SideEffect = S>
         + Serialize
         + DeserializeOwned
         + Send
         + Sync
         + 'static,
-> where
     <T as Aggregate>::DomainEvent: Serialize + DeserializeOwned + Send + Sync,
 {
     async fn load(
         transaction: &mut PostgresTransaction<'_>,
         aggregate_id: Uuid,
     ) -> Result<Context<T>, RepositoryError<T::ApplyError, T::DomainEventId, DbError>> {
-        Context::load(transaction, &aggregate_id.clone()).await
+        Context::load(transaction, &aggregate_id).await
     }
 }
 
-impl<
-        S: SideEffect<Id = Uuid> + Send + Sync + 'static,
-        T: Aggregate<AggregateId = Uuid, DomainEventId = Uuid, SideEffect = S>
-            + Serialize
-            + DeserializeOwned
-            + Send
-            + Sync
-            + 'static,
-    > RootExt<S, T> for T
+impl<S, T> RootExt<S, T> for T
 where
+    S: SideEffect<Id = Uuid> + Serialize + Send + Sync + 'static,
+    T: Aggregate<AggregateId = Uuid, DomainEventId = Uuid, SideEffect = S>
+        + Serialize
+        + DeserializeOwned
+        + Send
+        + Sync
+        + 'static,
     <T as Aggregate>::DomainEvent: Serialize + DeserializeOwned + Send + Sync,
 {
 }

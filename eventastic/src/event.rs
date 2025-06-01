@@ -1,11 +1,10 @@
 //! Module `event` contains types and abstractions helpful for working
 //! with Domain Events.
 
-use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 
 /// An [`Event`] that will be / has been persisted to the Event Store.
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct EventStoreEvent<Id, Evt>
 where
     Id: Debug,
