@@ -8,8 +8,8 @@ use eventastic::aggregate::SaveError;
 use eventastic::aggregate::SideEffect;
 use eventastic::event::Event;
 use eventastic_postgres::PostgresRepository;
-
 use eventastic_postgres::RootExt;
+use eventastic_outbox_postgres::TableOutbox;
 use serde::Deserialize;
 use serde::Serialize;
 use sqlx::{pool::PoolOptions, postgres::PgConnectOptions};
@@ -298,13 +298,13 @@ impl Aggregate for Account {
     }
 }
 
-async fn get_repository() -> PostgresRepository {
+async fn get_repository() -> PostgresRepository<TableOutbox> {
     let connection_options =
         PgConnectOptions::from_str("postgres://postgres:password@localhost/postgres").unwrap();
 
     let pool_options = PoolOptions::default();
 
-    PostgresRepository::new(connection_options, pool_options)
+    PostgresRepository::new(connection_options, pool_options, TableOutbox)
         .await
         .unwrap()
 }

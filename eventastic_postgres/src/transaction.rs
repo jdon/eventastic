@@ -1,6 +1,6 @@
 use std::fmt::Debug;
 
-use crate::DbError;
+use crate::{DbError, TransactionalOutbox};
 use async_trait::async_trait;
 use chrono::DateTime;
 use chrono::Utc;
@@ -20,11 +20,18 @@ use sqlx::query_as;
 use sqlx::types::JsonValue;
 use sqlx::types::Uuid;
 use sqlx::{Postgres, Transaction};
-pub struct PostgresTransaction<'a> {
+pub struct PostgresTransaction<'a, O>
+where
+    O: TransactionalOutbox,
+{
     pub(crate) inner: Transaction<'a, Postgres>,
+    pub(crate) outbox: &'a O,
 }
 
-impl<'a> PostgresTransaction<'a> {
+impl<'a, O> PostgresTransaction<'a, O>
+where
+    O: TransactionalOutbox,
+{
     /// Commit the transaction to the db.
     pub async fn commit(self) -> Result<(), DbError> {
         Ok(self.inner.commit().await?)
@@ -81,8 +88,9 @@ where
 }
 
 #[async_trait]
-impl<'a, S, T> RepositoryTransaction<T> for PostgresTransaction<'a>
+impl<'a, O, S, T> RepositoryTransaction<T> for PostgresTransaction<'a, O>
 where
+    O: TransactionalOutbox,
     S: SideEffect<Id = Uuid> + 'a + Serialize + Send + Sync,
     T: Aggregate<DomainEventId = Uuid, AggregateId = Uuid, SideEffect = S>
         + 'a
@@ -241,37 +249,19 @@ where
         &mut self,
         outbox_item: Vec<T::SideEffect>,
     ) -> Result<(), Self::DbError> {
-        let mut ids: Vec<Uuid> = Vec::with_capacity(outbox_item.len());
-        let mut messages: Vec<serde_json::Value> = Vec::with_capacity(outbox_item.len());
-        let mut retries: Vec<i32> = Vec::with_capacity(outbox_item.len());
-        let mut requeues: Vec<bool> = Vec::with_capacity(outbox_item.len());
-        let mut created_ats: Vec<DateTime<Utc>> = Vec::with_capacity(outbox_item.len());
+        let mut items: Vec<(Uuid, serde_json::Value)> = Vec::with_capacity(outbox_item.len());
 
         for item in outbox_item {
-            ids.push(*item.id());
-            messages.push(serde_json::to_value(item).map_err(DbError::SerializationError)?);
-            retries.push(0);
-            requeues.push(true);
-            created_ats.push(Utc::now());
+            items.push((
+                *item.id(),
+                serde_json::to_value(item).map_err(DbError::SerializationError)?,
+            ));
         }
 
-        sqlx::query(
-            "INSERT INTO outbox(id, message, retries, requeue, created_at) 
-             SELECT * FROM UNNEST($1::uuid[], $2::jsonb[], $3::int[], $4::boolean[], $5::timestamptz[])
-             ON CONFLICT (id) DO UPDATE SET 
-                message = excluded.message,
-                retries = excluded.retries,
-                requeue = excluded.requeue,
-                created_at = excluded.created_at",
-        )
-        .bind(&ids)
-        .bind(&messages)
-        .bind(&retries)
-        .bind(&requeues)
-        .bind(&created_ats)
-        .execute(&mut *self.inner)
-        .await?;
-
-        Ok(())
+        self
+            .outbox
+            .store_side_effects(&mut self.inner, items)
+            .await
+            
     }
 }
