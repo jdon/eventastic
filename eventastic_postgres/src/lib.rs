@@ -5,11 +5,12 @@ use eventastic::{
     aggregate::{Aggregate, Context, SideEffect},
     repository::RepositoryError,
 };
+use sqlx::{Postgres, Transaction};
 pub use repository::PostgresRepository;
+pub use transaction::PostgresTransaction;
 use serde::{Serialize, de::DeserializeOwned};
 use sqlx::types::Uuid;
 use thiserror::Error;
-pub use transaction::PostgresTransaction;
 
 #[derive(Error, Debug)]
 pub enum DbError {
@@ -39,7 +40,16 @@ impl From<sqlx::Error> for DbError {
 }
 
 #[async_trait]
-pub trait RootExt<S, T>
+pub trait TransactionalOutbox: Send + Sync {
+    async fn store_side_effects(
+        &self,
+        transaction: &mut Transaction<'_, Postgres>,
+        items: Vec<(Uuid, serde_json::Value)>,
+    ) -> Result<(), DbError>;
+}
+
+#[async_trait]
+pub trait RootExt<S, T, O>
 where
     S: SideEffect<Id = Uuid> + Serialize + Send + Sync + 'static,
     T: Aggregate<AggregateId = Uuid, DomainEventId = Uuid, SideEffect = S>
@@ -49,16 +59,17 @@ where
         + Sync
         + 'static,
     <T as Aggregate>::DomainEvent: Serialize + DeserializeOwned + Send + Sync,
+    O: TransactionalOutbox + Send + Sync,
 {
     async fn load(
-        transaction: &mut PostgresTransaction<'_>,
+        transaction: &mut PostgresTransaction<'_, O>,
         aggregate_id: Uuid,
     ) -> Result<Context<T>, RepositoryError<T::ApplyError, T::DomainEventId, DbError>> {
         Context::load(transaction, &aggregate_id).await
     }
 }
 
-impl<S, T> RootExt<S, T> for T
+impl<S, T, O> RootExt<S, T, O> for T
 where
     S: SideEffect<Id = Uuid> + Serialize + Send + Sync + 'static,
     T: Aggregate<AggregateId = Uuid, DomainEventId = Uuid, SideEffect = S>
@@ -68,5 +79,6 @@ where
         + Sync
         + 'static,
     <T as Aggregate>::DomainEvent: Serialize + DeserializeOwned + Send + Sync,
+    O: TransactionalOutbox + Send + Sync,
 {
 }
