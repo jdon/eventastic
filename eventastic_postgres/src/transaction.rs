@@ -1,6 +1,6 @@
 use std::fmt::Debug;
 
-use crate::{DbError, TransactionalOutbox};
+use crate::{DbError, SideEffectStorage};
 use async_trait::async_trait;
 use chrono::DateTime;
 use chrono::Utc;
@@ -22,7 +22,7 @@ use sqlx::types::Uuid;
 use sqlx::{Postgres, Transaction};
 pub struct PostgresTransaction<'a, O>
 where
-    O: TransactionalOutbox,
+    O: SideEffectStorage,
 {
     pub(crate) inner: Transaction<'a, Postgres>,
     pub(crate) outbox: &'a O,
@@ -30,7 +30,7 @@ where
 
 impl<'a, O> PostgresTransaction<'a, O>
 where
-    O: TransactionalOutbox,
+    O: SideEffectStorage,
 {
     /// Commit the transaction to the db.
     pub async fn commit(self) -> Result<(), DbError> {
@@ -90,7 +90,7 @@ where
 #[async_trait]
 impl<'a, O, S, T> RepositoryTransaction<T> for PostgresTransaction<'a, O>
 where
-    O: TransactionalOutbox,
+    O: SideEffectStorage,
     S: SideEffect<Id = Uuid> + 'a + Serialize + Send + Sync,
     T: Aggregate<DomainEventId = Uuid, AggregateId = Uuid, SideEffect = S>
         + 'a
