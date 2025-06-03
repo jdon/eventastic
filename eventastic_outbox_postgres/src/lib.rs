@@ -1,15 +1,15 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use eventastic_postgres::{DbError, TransactionalOutbox};
+use eventastic_postgres::{DbError, SideEffectStorage};
 use sqlx::{Postgres, Transaction};
 use sqlx::types::Uuid;
 
-/// Default implementation of [`TransactionalOutbox`] that stores messages in an `outbox` table.
+/// Default implementation of [`SideEffectStorage`] that stores messages in an `outbox` table.
 #[derive(Clone, Copy, Default)]
 pub struct TableOutbox;
 
 #[async_trait]
-impl TransactionalOutbox for TableOutbox {
+impl SideEffectStorage for TableOutbox {
     async fn store_side_effects(
         &self,
         transaction: &mut Transaction<'_, Postgres>,

@@ -40,7 +40,7 @@ impl From<sqlx::Error> for DbError {
 }
 
 #[async_trait]
-pub trait TransactionalOutbox: Send + Sync {
+pub trait SideEffectStorage: Send + Sync {
     async fn store_side_effects(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
@@ -59,7 +59,7 @@ where
         + Sync
         + 'static,
     <T as Aggregate>::DomainEvent: Serialize + DeserializeOwned + Send + Sync,
-    O: TransactionalOutbox + Send + Sync,
+    O: SideEffectStorage + Send + Sync,
 {
     async fn load(
         transaction: &mut PostgresTransaction<'_, O>,
@@ -79,6 +79,6 @@ where
         + Sync
         + 'static,
     <T as Aggregate>::DomainEvent: Serialize + DeserializeOwned + Send + Sync,
-    O: TransactionalOutbox + Send + Sync,
+    O: SideEffectStorage + Send + Sync,
 {
 }

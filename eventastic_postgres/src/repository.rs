@@ -1,4 +1,4 @@
-use crate::{PostgresTransaction, TransactionalOutbox};
+use crate::{PostgresTransaction, SideEffectStorage};
 use sqlx::{
     Pool, Postgres,
     postgres::{PgConnectOptions, PgPoolOptions},
@@ -7,7 +7,7 @@ use sqlx::{
 #[derive(Clone)]
 pub struct PostgresRepository<O>
 where
-    O: TransactionalOutbox + Clone,
+    O: SideEffectStorage + Clone,
 {
     pub(crate) inner: Pool<Postgres>,
     pub(crate) outbox: O,
@@ -15,7 +15,7 @@ where
 
 impl<O> PostgresRepository<O>
 where
-    O: TransactionalOutbox + Clone,
+    O: SideEffectStorage + Clone,
 {
     pub async fn new(
         connect_options: PgConnectOptions,
