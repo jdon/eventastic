@@ -20,6 +20,7 @@ use sqlx::query_as;
 use sqlx::types::JsonValue;
 use sqlx::types::Uuid;
 use sqlx::{Postgres, Transaction};
+use crate::OutboxMessage;
 pub struct PostgresTransaction<'a, O>
 where
     O: SideEffectStorage,
@@ -45,6 +46,73 @@ where
     /// Get the inner postgres transaction
     pub fn into_inner(self) -> Transaction<'a, Postgres> {
         self.inner
+    }
+
+    /// Returns a batch of up to 10 side effects from the outbox table.
+    pub async fn get_outbox_batch<T>(&mut self) -> Result<Vec<OutboxMessage<T>>, DbError>
+    where
+        T: SideEffect + DeserializeOwned,
+        for<'sql> T::Id: sqlx::Decode<'sql, Postgres>
+            + sqlx::Type<Postgres>
+            + sqlx::Encode<'sql, Postgres>
+            + Unpin,
+    {
+        #[derive(sqlx::FromRow)]
+        struct OutboxRow {
+            message: JsonValue,
+            retries: i32,
+            requeue: bool,
+        }
+
+        let rows = query_as::<_, OutboxRow>(
+            "SELECT message, retries, requeue FROM outbox \
+             WHERE requeue = true ORDER BY created_at \
+             FOR UPDATE SKIP LOCKED LIMIT 10",
+        )
+        .fetch_all(&mut *self.inner)
+        .await?;
+
+        rows
+            .into_iter()
+            .map(|row| {
+                let msg = serde_json::from_value(row.message)?;
+                Ok(OutboxMessage::new(msg, row.retries as u16, row.requeue))
+            })
+            .collect::<Result<Vec<_>, serde_json::Error>>()
+            .map_err(DbError::SerializationError)
+    }
+
+    /// Delete a side effect from the outbox table.
+    pub async fn delete_outbox_item<I>(&mut self, id: I) -> Result<(), DbError>
+    where
+        for<'sql> I: sqlx::Decode<'sql, Postgres>
+            + sqlx::Type<Postgres>
+            + sqlx::Encode<'sql, Postgres>
+            + Unpin,
+    {
+        query("DELETE FROM outbox WHERE id = $1")
+            .bind(id)
+            .execute(&mut *self.inner)
+            .await?;
+        Ok(())
+    }
+
+    /// Update the retries and requeue flag for a side effect message.
+    pub async fn update_outbox_item<T>(&mut self, item: OutboxMessage<T>) -> Result<(), DbError>
+    where
+        T: SideEffect + DeserializeOwned,
+        for<'sql> T::Id: sqlx::Decode<'sql, Postgres>
+            + sqlx::Type<Postgres>
+            + sqlx::Encode<'sql, Postgres>
+            + Unpin,
+    {
+        query("UPDATE outbox SET retries = $2, requeue = $3 WHERE id = $1")
+            .bind(item.message.id())
+            .bind(i32::from(item.retries))
+            .bind(item.requeue)
+            .execute(&mut *self.inner)
+            .await?;
+        Ok(())
     }
 }
 

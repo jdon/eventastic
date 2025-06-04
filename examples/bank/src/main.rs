@@ -9,7 +9,9 @@ use eventastic::aggregate::SideEffect;
 use eventastic::event::Event;
 use eventastic_postgres::PostgresRepository;
 use eventastic_postgres::RootExt;
-use eventastic_outbox_postgres::TableOutbox;
+use eventastic_outbox_postgres::{
+    RepositoryOutboxExt, SideEffectHandler, TableOutbox,
+};
 use serde::Deserialize;
 use serde::Serialize;
 use sqlx::{pool::PoolOptions, postgres::PgConnectOptions};
@@ -24,6 +26,16 @@ async fn main() -> Result<(), anyhow::Error> {
     //Migrate the db
 
     repository.run_migrations().await?;
+
+    // Run our side effect handler in the background
+    tokio::spawn({
+        let repo = repository.clone();
+        async move {
+            let _ = repo
+                .start_outbox(SideEffectContext {}, std::time::Duration::from_secs(5))
+                .await;
+        }
+    });
 
     // Start transaction
     let mut transaction = repository.begin_transaction().await?;
@@ -203,6 +215,23 @@ impl SideEffect for SideEffects {
         match self {
             SideEffects::PublishMessage { id, .. } | SideEffects::SendEmail { id, .. } => id,
         }
+    }
+}
+
+pub struct SideEffectContext;
+
+#[async_trait::async_trait]
+impl SideEffectHandler for SideEffectContext {
+    type SideEffect = SideEffects;
+    type Error = ();
+
+    async fn handle(
+        &self,
+        msg: &SideEffects,
+        retries: u16,
+    ) -> Result<(), (bool, Self::Error)> {
+        println!("handling side effect {:?} retries {}", msg, retries);
+        Ok(())
     }
 }
 
