@@ -5,7 +5,12 @@ default:
 # Start PostgreSQL database using Docker
 db:
     @bash scripts/postgres.sh
-    sqlx migrate run --source eventastic_postgres/migrations/
+    # Migrations are applied by the repository at runtime
+
+# Setup PostgreSQL without Docker for Codex
+ai-setup:
+    @bash scripts/postgres_codex.sh
+    # Migrations are applied by the repository at runtime
 
 # Build the project
 build:
