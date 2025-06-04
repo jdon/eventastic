@@ -1,5 +1,6 @@
 mod repository;
 mod transaction;
+mod outbox;
 use async_trait::async_trait;
 use eventastic::{
     aggregate::{Aggregate, Context, SideEffect},
@@ -8,6 +9,7 @@ use eventastic::{
 use sqlx::{Postgres, Transaction};
 pub use repository::PostgresRepository;
 pub use transaction::PostgresTransaction;
+pub use outbox::OutboxMessage;
 use serde::{Serialize, de::DeserializeOwned};
 use sqlx::types::Uuid;
 use thiserror::Error;

@@ -11,3 +11,6 @@ sqlx = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 serde = { workspace = true }
+eventastic = { path = "../eventastic" }
+futures-util = { workspace = true }
+tokio = { workspace = true }
