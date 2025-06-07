@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use eventastic::aggregate::SideEffect;
-use eventastic_postgres::{DbError, PostgresRepository, SideEffectStorage};
+use eventastic_postgres::{DbError, PostgresRepository, PostgresTransaction, SideEffectStorage};
 use serde::de::DeserializeOwned;
 use sqlx::types::Uuid;
 use sqlx::{Postgres, Transaction};
@@ -51,37 +51,116 @@ impl SideEffectStorage for TableOutbox {
 
         Ok(())
     }
+
 }
 
-/// A message retrieved from the outbox table.
-#[derive(Debug, Clone)]
-pub struct OutboxMessage<T>
-where
-    T: SideEffect,
-{
-    /// The stored side effect.
-    pub message: T,
-    /// The amount of times this message has been retried.
-    pub(crate) retries: u16,
-    /// Whether the message should be requeued on failure.
-    pub requeue: bool,
+#[async_trait]
+pub trait TransactionOutboxExt {
+    async fn get_outbox_batch<T>(
+        &mut self,
+    ) -> Result<Vec<eventastic_postgres::OutboxMessage<T>>, DbError>
+    where
+        T: SideEffect + DeserializeOwned + Send,
+        for<'sql> T::Id: sqlx::Decode<'sql, Postgres>
+            + sqlx::Type<Postgres>
+            + sqlx::Encode<'sql, Postgres>
+            + Unpin;
+
+    async fn delete_outbox_item<I>(&mut self, id: I) -> Result<(), DbError>
+    where
+        for<'sql> I: sqlx::Decode<'sql, Postgres>
+            + sqlx::Type<Postgres>
+            + sqlx::Encode<'sql, Postgres>
+            + Unpin
+            + Send;
+
+    async fn update_outbox_item<T>(
+        &mut self,
+        item: eventastic_postgres::OutboxMessage<T>,
+    ) -> Result<(), DbError>
+    where
+        T: SideEffect + DeserializeOwned + Send,
+        for<'sql> T::Id: sqlx::Decode<'sql, Postgres>
+            + sqlx::Type<Postgres>
+            + sqlx::Encode<'sql, Postgres>
+            + Unpin;
 }
 
-impl<T> OutboxMessage<T>
-where
-    T: SideEffect,
-{
-    pub fn new(message: T, retries: u16, requeue: bool) -> Self {
-        Self {
-            message,
-            retries,
-            requeue,
+#[async_trait]
+impl<'a> TransactionOutboxExt for PostgresTransaction<'a, TableOutbox> {
+    async fn get_outbox_batch<T>(
+        &mut self,
+    ) -> Result<Vec<eventastic_postgres::OutboxMessage<T>>, DbError>
+    where
+        T: SideEffect + DeserializeOwned + Send,
+        for<'sql> T::Id: sqlx::Decode<'sql, Postgres>
+            + sqlx::Type<Postgres>
+            + sqlx::Encode<'sql, Postgres>
+            + Unpin,
+    {
+        #[derive(sqlx::FromRow)]
+        struct OutboxRow {
+            message: serde_json::Value,
+            retries: i32,
+            requeue: bool,
         }
+
+        let rows = sqlx::query_as::<_, OutboxRow>(
+            "SELECT message, retries, requeue FROM outbox \
+             WHERE requeue = true ORDER BY created_at \
+             FOR UPDATE SKIP LOCKED LIMIT 10",
+        )
+        .fetch_all(self.inner_mut().as_mut())
+        .await?;
+
+        rows
+            .into_iter()
+            .map(|row| {
+                let msg = serde_json::from_value(row.message)?;
+                Ok(eventastic_postgres::OutboxMessage::new(
+                    msg,
+                    row.retries as u16,
+                    row.requeue,
+                ))
+            })
+            .collect::<Result<Vec<_>, serde_json::Error>>()
+            .map_err(DbError::SerializationError)
     }
 
-    /// Returns the retry count for this message.
-    pub fn retries(&self) -> u16 {
-        self.retries
+    async fn delete_outbox_item<I>(&mut self, id: I) -> Result<(), DbError>
+    where
+        for<'sql> I: sqlx::Decode<'sql, Postgres>
+            + sqlx::Type<Postgres>
+            + sqlx::Encode<'sql, Postgres>
+            + Unpin
+            + Send,
+    {
+        sqlx::query("DELETE FROM outbox WHERE id = $1")
+            .bind(id)
+            .execute(self.inner_mut().as_mut())
+            .await?;
+        Ok(())
+    }
+
+    async fn update_outbox_item<T>(
+        &mut self,
+        item: eventastic_postgres::OutboxMessage<T>,
+    ) -> Result<(), DbError>
+    where
+        T: SideEffect + DeserializeOwned + Send,
+        for<'sql> T::Id: sqlx::Decode<'sql, Postgres>
+            + sqlx::Type<Postgres>
+            + sqlx::Encode<'sql, Postgres>
+            + Unpin,
+    {
+        sqlx::query("UPDATE outbox SET retries = $2, requeue = $3 WHERE id = $1")
+            .bind(item.message.id())
+            .bind(i32::from(item.retries))
+            .bind(item.requeue)
+            .execute(self.inner_mut().as_mut())
+            .await?;
+
+        Ok(())
     }
 }
 
