@@ -7,11 +7,9 @@ use eventastic::aggregate::Root;
 use eventastic::aggregate::SaveError;
 use eventastic::aggregate::SideEffect;
 use eventastic::event::Event;
+use eventastic_outbox_postgres::{RepositoryOutboxExt, SideEffectHandler, TableOutbox};
 use eventastic_postgres::PostgresRepository;
 use eventastic_postgres::RootExt;
-use eventastic_outbox_postgres::{
-    RepositoryOutboxExt, SideEffectHandler, TableOutbox,
-};
 use serde::Deserialize;
 use serde::Serialize;
 use sqlx::{pool::PoolOptions, postgres::PgConnectOptions};
@@ -225,11 +223,7 @@ impl SideEffectHandler for SideEffectContext {
     type SideEffect = SideEffects;
     type Error = ();
 
-    async fn handle(
-        &self,
-        msg: &SideEffects,
-        retries: u16,
-    ) -> Result<(), (bool, Self::Error)> {
+    async fn handle(&self, msg: &SideEffects, retries: u16) -> Result<(), (bool, Self::Error)> {
         println!("handling side effect {:?} retries {}", msg, retries);
         Ok(())
     }

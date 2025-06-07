@@ -1,18 +1,18 @@
+mod outbox;
 mod repository;
 mod transaction;
-mod outbox;
 use async_trait::async_trait;
 use eventastic::{
     aggregate::{Aggregate, Context, SideEffect},
     repository::RepositoryError,
 };
-use sqlx::{Postgres, Transaction};
-pub use repository::PostgresRepository;
-pub use transaction::PostgresTransaction;
 pub use outbox::OutboxMessage;
+pub use repository::PostgresRepository;
 use serde::{Serialize, de::DeserializeOwned};
 use sqlx::types::Uuid;
+use sqlx::{Postgres, Transaction};
 use thiserror::Error;
+pub use transaction::PostgresTransaction;
 
 #[derive(Error, Debug)]
 pub enum DbError {

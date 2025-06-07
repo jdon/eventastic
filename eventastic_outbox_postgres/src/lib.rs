@@ -96,13 +96,9 @@ pub trait SideEffectHandler {
     /// Returning `Ok(())` deletes the message from the outbox. Returning
     /// `Err((true, E))` requeues the message. Returning `Err((false, E))`
     /// leaves the message without requeuing.
-    async fn handle(
-        &self,
-        msg: &Self::SideEffect,
-        retries: u16,
-    ) -> Result<(), (bool, Self::Error)>;
+    async fn handle(&self, msg: &Self::SideEffect, retries: u16)
+    -> Result<(), (bool, Self::Error)>;
 }
-
 
 /// Extension trait for running the outbox worker using a [`TableOutbox`].
 #[async_trait]
@@ -116,8 +112,10 @@ pub trait RepositoryOutboxExt {
         T: SideEffect + DeserializeOwned + Send + Sync,
         T::Id: Clone + Send,
         H: SideEffectHandler<SideEffect = T> + Send + Sync,
-        for<'sql> T::Id:
-            sqlx::Decode<'sql, Postgres> + sqlx::Type<Postgres> + sqlx::Encode<'sql, Postgres> + Unpin;
+        for<'sql> T::Id: sqlx::Decode<'sql, Postgres>
+            + sqlx::Type<Postgres>
+            + sqlx::Encode<'sql, Postgres>
+            + Unpin;
 }
 
 #[async_trait]
@@ -131,8 +129,10 @@ impl RepositoryOutboxExt for PostgresRepository<TableOutbox> {
         T: SideEffect + DeserializeOwned + Send + Sync,
         T::Id: Clone + Send,
         H: SideEffectHandler<SideEffect = T> + Send + Sync,
-        for<'sql> T::Id:
-            sqlx::Decode<'sql, Postgres> + sqlx::Type<Postgres> + sqlx::Encode<'sql, Postgres> + Unpin,
+        for<'sql> T::Id: sqlx::Decode<'sql, Postgres>
+            + sqlx::Type<Postgres>
+            + sqlx::Encode<'sql, Postgres>
+            + Unpin,
     {
         let handler = Arc::new(handler);
         loop {
@@ -175,4 +175,3 @@ where
 
     tx.commit().await
 }
-

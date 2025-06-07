@@ -1,8 +1,8 @@
 use super::test_aggregate::{Account, AccountEvent};
 use chrono::{DateTime, Utc};
 use eventastic::aggregate::{Context, Root};
-use eventastic_postgres::PostgresRepository;
 use eventastic_outbox_postgres::TableOutbox;
+use eventastic_postgres::PostgresRepository;
 use sqlx::Row;
 use sqlx::{pool::PoolOptions, postgres::PgConnectOptions};
 use std::str::FromStr;

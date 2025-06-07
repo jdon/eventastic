@@ -24,7 +24,10 @@ where
     ) -> Result<Self, sqlx::Error> {
         let pool = pool_options.connect_with(connect_options).await?;
 
-        Ok(Self { inner: pool, outbox })
+        Ok(Self {
+            inner: pool,
+            outbox,
+        })
     }
 
     /// Start a new transaction using the default isolation level

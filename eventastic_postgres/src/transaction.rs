@@ -1,5 +1,6 @@
 use std::fmt::Debug;
 
+use crate::OutboxMessage;
 use crate::{DbError, SideEffectStorage};
 use async_trait::async_trait;
 use chrono::DateTime;
@@ -20,7 +21,6 @@ use sqlx::query_as;
 use sqlx::types::JsonValue;
 use sqlx::types::Uuid;
 use sqlx::{Postgres, Transaction};
-use crate::OutboxMessage;
 pub struct PostgresTransaction<'a, O>
 where
     O: SideEffectStorage,
@@ -72,8 +72,7 @@ where
         .fetch_all(&mut *self.inner)
         .await?;
 
-        rows
-            .into_iter()
+        rows.into_iter()
             .map(|row| {
                 let msg = serde_json::from_value(row.message)?;
                 Ok(OutboxMessage::new(msg, row.retries as u16, row.requeue))
@@ -326,10 +325,6 @@ where
             ));
         }
 
-        self
-            .outbox
-            .store_side_effects(&mut self.inner, items)
-            .await
-            
+        self.outbox.store_side_effects(&mut self.inner, items).await
     }
 }
