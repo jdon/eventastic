@@ -2,6 +2,10 @@
 resolver = "2"
 members = ["eventastic", "eventastic_postgres", "examples/*"]
 
+[workspace.package]
+license = "MIT"
+license-file = "LICENSE"
+
 [workspace.dependencies]
 # Eventastic dependencies
 async-trait = "0.1"

@@ -97,4 +97,3 @@ async fn main() -> Result<(), anyhow::Error> {
     tokio::time::sleep(std::time::Duration::from_secs(30)).await;
     Ok(())
 }
-```
