@@ -6,9 +6,9 @@ use eventastic::aggregate::Context;
 use eventastic::aggregate::Root;
 use eventastic::aggregate::SaveError;
 use eventastic::aggregate::SideEffect;
-use eventastic::event::Event;
+use eventastic::event::DomainEvent;
+use eventastic_outbox_postgres::{RepositoryOutboxExt, SideEffectHandler, TableOutbox};
 use eventastic_postgres::PostgresRepository;
-
 use eventastic_postgres::RootExt;
 use serde::Deserialize;
 use serde::Serialize;
@@ -24,6 +24,16 @@ async fn main() -> Result<(), anyhow::Error> {
     //Migrate the db
 
     repository.run_migrations().await?;
+
+    // Run our side effect handler in the background
+    tokio::spawn({
+        let repo = repository.clone();
+        async move {
+            let _ = repo
+                .start_outbox(SideEffectContext {}, std::time::Duration::from_secs(5))
+                .await;
+        }
+    });
 
     // Start transaction
     let mut transaction = repository.begin_transaction().await?;
@@ -162,7 +172,8 @@ pub enum AccountEvent {
     },
 }
 
-impl Event<Uuid> for AccountEvent {
+impl DomainEvent for AccountEvent {
+    type EventId = Uuid;
     fn id(&self) -> &Uuid {
         match self {
             AccountEvent::Open { event_id, .. }
@@ -197,12 +208,25 @@ pub enum SideEffects {
 
 impl SideEffect for SideEffects {
     /// The type used to uniquely identify this side effect.
-    type Id = Uuid;
+    type SideEffectId = Uuid;
 
-    fn id(&self) -> &Self::Id {
+    fn id(&self) -> &Self::SideEffectId {
         match self {
             SideEffects::PublishMessage { id, .. } | SideEffects::SendEmail { id, .. } => id,
         }
+    }
+}
+
+pub struct SideEffectContext;
+
+#[async_trait::async_trait]
+impl SideEffectHandler for SideEffectContext {
+    type SideEffect = SideEffects;
+    type Error = ();
+
+    async fn handle(&self, msg: &SideEffects, retries: u16) -> Result<(), (bool, Self::Error)> {
+        println!("handling side effect {:?} retries {}", msg, retries);
+        Ok(())
     }
 }
 
@@ -218,9 +242,6 @@ impl Aggregate for Account {
     /// The type of Domain Events that interest this Aggregate.
     /// Usually, this type should be an `enum`.
     type DomainEvent = AccountEvent;
-
-    /// The type used to uniquely identify the a given domain event.
-    type DomainEventId = Uuid;
 
     /// The error type that can be returned by [`Aggregate::apply`] when
     /// mutating the Aggregate state.
@@ -298,13 +319,13 @@ impl Aggregate for Account {
     }
 }
 
-async fn get_repository() -> PostgresRepository {
+async fn get_repository() -> PostgresRepository<TableOutbox> {
     let connection_options =
         PgConnectOptions::from_str("postgres://postgres:password@localhost/postgres").unwrap();
 
     let pool_options = PoolOptions::default();
 
-    PostgresRepository::new(connection_options, pool_options)
+    PostgresRepository::new(connection_options, pool_options, TableOutbox)
         .await
         .unwrap()
 }

@@ -1,6 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["eventastic", "eventastic_postgres", "examples/*"]
+members = [
+	"eventastic",
+	"eventastic_outbox_postgres",
+	"eventastic_postgres",
+	"examples/*",
+]
 
 [workspace.package]
 license = "MIT"

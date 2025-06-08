@@ -1,13 +1,14 @@
 use super::test_aggregate::{Account, AccountEvent};
 use chrono::{DateTime, Utc};
 use eventastic::aggregate::{Context, Root};
+use eventastic_outbox_postgres::TableOutbox;
 use eventastic_postgres::PostgresRepository;
 use sqlx::Row;
 use sqlx::{pool::PoolOptions, postgres::PgConnectOptions};
 use std::str::FromStr;
 use uuid::Uuid;
 
-pub async fn get_repository() -> PostgresRepository {
+pub async fn get_repository() -> PostgresRepository<TableOutbox> {
     let host = std::env::var("POSTGRES_HOST").unwrap_or_else(|_| "localhost".to_string());
     let connection_string = format!("postgres://postgres:password@{host}/postgres");
     let connection_options = PgConnectOptions::from_str(connection_string.as_str())
@@ -15,7 +16,7 @@ pub async fn get_repository() -> PostgresRepository {
 
     let pool_options = PoolOptions::default();
 
-    let repo = PostgresRepository::new(connection_options, pool_options)
+    let repo = PostgresRepository::new(connection_options, pool_options, TableOutbox)
         .await
         .expect("Failed to connect to postgres");
     repo.run_migrations()
