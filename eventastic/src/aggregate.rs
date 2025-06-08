@@ -2,14 +2,14 @@
 //!
 //! ## What is an Aggregate?
 //!
-//! An [Aggregate] is the most important concept in your domain.
+//! An [`Aggregate`] is the most important concept in your domain.
 //!
 //! It represents the entities your business domain is composed of,
 //! and the business logic your domain is exposing.
 //!
 //! For example: in an Order Management bounded-context (e.g. a
 //! microservice), the concepts of Order or Customer are two potential
-//! [Aggregate]s.
+//! [`Aggregate`]s.
 //!
 //! Aggregates expose mutations with the concept of **commands**:
 //! from the previous example, an Order might expose some commands such as
@@ -32,7 +32,7 @@ mod root;
 
 pub use root::*;
 
-/// An Aggregate represents a Domain Model that, through an Aggregate [Root],
+/// An Aggregate represents a Domain Model that, through an Aggregate [`Root`],
 /// acts as a _transactional boundary_.
 ///
 /// Aggregates are also used to enforce Domain invariants
@@ -92,6 +92,6 @@ pub trait SideEffect {
     /// The type used to uniquely identify this side effect.
     type SideEffectId;
 
-    /// Returns read access to the [`SideEffect::Id`]
+    /// Returns read access to the [`SideEffect::SideEffectId`]
     fn id(&self) -> &Self::SideEffectId;
 }

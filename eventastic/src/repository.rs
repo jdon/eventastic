@@ -10,25 +10,25 @@ use crate::{
 /// List of possible errors that can be returned by the [`RepositoryTransaction`] trait.
 #[derive(Debug, thiserror::Error)]
 pub enum RepositoryError<E, EventId, DE> {
-    /// This error is returned by [`RepositoryTransaction::get`] when the
+    /// This error is returned by [`RepositoryTransaction`] methods when the
     /// desired Aggregate could not be found in the data store.
     #[error("Aggregate was not found")]
     AggregateNotFound,
 
-    /// This error is returned by [`RepositoryTransaction::get`] when
-    /// the desired [Aggregate] returns an error while applying a Domain Event
+    /// This error is returned by [`RepositoryTransaction`] methods when
+    /// the desired [`Aggregate`] returns an error while applying a Domain Event
     ///
     /// This usually implies the Event contains corrupted or invalid data.
     #[error("Failed to apply events to aggregate from event stream. Event Id: {0} caused: {1}")]
     Apply(EventId, #[source] E),
 
-    /// This error is returned when the [`RepositoryTransaction::get`] returns
+    /// This error is returned when [`RepositoryTransaction`] methods return
     /// an unexpected error while streaming back the Aggregate's Event Stream.
     #[error("Event store failed while streaming events: {0}")]
     Repository(#[from] DE),
 }
 
-/// A snap of the [`Aggregate`] that is persisted in the db.
+/// A snapshot of the [`Aggregate`] that is persisted in the db.
 #[derive(Debug, Clone)]
 pub struct Snapshot<T>
 where
@@ -43,7 +43,7 @@ where
 /// an [`Aggregate`] from and to a persistent data store
 #[async_trait]
 pub trait RepositoryTransaction<T: Aggregate> {
-    /// The error type returned by the Store during a [`RepositoryTransaction::stream`] and [`RepositoryTransaction::append`] call.
+    /// The error type returned by the Store during repository operations.
     type DbError;
 
     /// Opens an Event Stream, effectively streaming all Domain Events
@@ -55,7 +55,7 @@ pub trait RepositoryTransaction<T: Aggregate> {
         version: u64,
     ) -> impl Stream<Item = Result<EventStoreEvent<T::DomainEvent>, Self::DbError>>;
 
-    // Get a specific event from the event store.
+    /// Get a specific event from the event store by its ID.
     #[doc(hidden)]
     async fn get_event(
         &mut self,
@@ -63,8 +63,9 @@ pub trait RepositoryTransaction<T: Aggregate> {
         event_id: &<<T as Aggregate>::DomainEvent as DomainEvent>::EventId,
     ) -> Result<Option<EventStoreEvent<T::DomainEvent>>, Self::DbError>;
 
-    /// Retrieves the latest version of the Aggregate from the Event Store.
-    /// This method must check that the snapshot version is correct
+    /// Retrieves the latest snapshot of the Aggregate from the Event Store.
+    /// This method must check that the snapshot version matches the expected
+    /// [`Aggregate::SNAPSHOT_VERSION`] to ensure compatibility.
     #[doc(hidden)]
     async fn get_snapshot(
         &mut self,
@@ -81,10 +82,11 @@ pub trait RepositoryTransaction<T: Aggregate> {
         events: Vec<EventStoreEvent<T::DomainEvent>>,
     ) -> Result<Vec<<<T as Aggregate>::DomainEvent as DomainEvent>::EventId>, Self::DbError>;
 
+    /// Stores a snapshot of the aggregate state to optimize future loading.
     #[doc(hidden)]
     async fn store_snapshot(&mut self, snapshot: Snapshot<T>) -> Result<(), Self::DbError>;
 
-    /// Insert side effects in to the repository
+    /// Insert side effects into the repository
     #[doc(hidden)]
     async fn store_side_effects(
         &mut self,

@@ -7,8 +7,8 @@ use crate::{
 };
 use std::fmt::Debug;
 
-/// A context object that should be used by the Aggregate [Root] methods to
-/// access the [Aggregate] state and to record new Domain Events.
+/// A context object that should be used by the Aggregate [`Root`] methods to
+/// access the [`Aggregate`] state and to record new Domain Events.
 #[derive(Debug, Clone)]
 #[must_use]
 pub struct Context<T>
@@ -30,32 +30,32 @@ where
         self.aggregate.aggregate_id()
     }
 
-    /// Returns the current version for the [Aggregate].
+    /// Returns the current version for the [`Aggregate`].
     pub fn version(&self) -> u64 {
         self.version
     }
 
-    /// Returns the current snapshot of the [Aggregate].
+    /// Returns the current snapshot version for the [`Aggregate`].
     pub fn snapshot_version(&self) -> u64 {
         T::SNAPSHOT_VERSION
     }
 
-    /// Returns the list of uncommitted, recorded Domain [Events] from the [Context]
+    /// Returns the list of uncommitted, recorded Domain Events from the [`Context`]
     /// and resets the internal list to its default value.
     #[doc(hidden)]
     pub fn take_uncommitted_events(&mut self) -> Vec<EventStoreEvent<T::DomainEvent>> {
         std::mem::take(&mut self.uncommitted_events)
     }
 
-    /// Returns the list of uncommitted, recorded [`Aggregate::SideEffect`]s from the [Context]
+    /// Returns the list of uncommitted, recorded [`Aggregate::SideEffect`]s from the [`Context`]
     /// and resets the internal list to its default value.
     #[doc(hidden)]
     pub fn take_uncommitted_side_effects(&mut self) -> Vec<T::SideEffect> {
         std::mem::take(&mut self.uncommitted_side_effects)
     }
 
-    /// Creates a new [Context] instance from a Domain [Event]
-    /// while rehydrating an [Aggregate].
+    /// Creates a new [`Context`] instance from a Domain Event
+    /// while rehydrating an [`Aggregate`].
     ///
     /// # Errors
     ///
@@ -73,8 +73,8 @@ where
         })
     }
 
-    /// Applies a new Domain [Event] to the [Context] while rehydrating
-    /// an [Aggregate].
+    /// Applies a new Domain Event to the [`Context`] while rehydrating
+    /// an [`Aggregate`].
     ///
     /// # Errors
     ///
@@ -114,12 +114,12 @@ where
             uncommitted_side_effects,
         })
     }
-    /// Returns read access to the [Aggregate] state.
+    /// Returns read access to the [`Aggregate`] state.
     pub fn state(&self) -> &T {
         &self.aggregate
     }
 
-    /// Records a change to the [Aggregate] [Root], expressed by the specified
+    /// Records a change to the [`Aggregate`] [`Root`], expressed by the specified
     /// Domain Event.
     /// # Errors
     ///
@@ -142,6 +142,15 @@ where
         Ok(())
     }
 
+    /// Saves the aggregate and its uncommitted events to the repository.
+    /// This method handles concurrency control and idempotency checks.
+    ///
+    /// # Errors
+    ///
+    /// This method can return various errors including:
+    /// - [`SaveError::Repository`] - Database or storage errors
+    /// - [`SaveError::IdempotencyError`] - When an event with the same ID but different content exists
+    /// - [`SaveError::OptimisticConcurrency`] - When a concurrent modification is detected
     pub async fn save<R>(
         &mut self,
         transaction: &mut R,
@@ -215,6 +224,17 @@ where
         Ok(())
     }
 
+    /// Loads an aggregate from the repository by replaying its event stream.
+    /// 
+    /// This method first attempts to load a snapshot if available, then replays
+    /// any events that occurred after the snapshot to reconstruct the current state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RepositoryError`] variants:
+    /// - [`RepositoryError::AggregateNotFound`] - When no events exist for the given ID
+    /// - [`RepositoryError::Apply`] - When an event cannot be applied to the aggregate
+    /// - [`RepositoryError::Repository`] - When the underlying storage fails
     pub async fn load<R>(
         transaction: &mut R,
         aggregate_id: &T::AggregateId,

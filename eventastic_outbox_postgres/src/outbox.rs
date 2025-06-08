@@ -126,7 +126,17 @@ where
     }
 }
 
-/// Trait used to handle side effects pulled from the outbox.
+/// Trait for handling side effects pulled from the outbox.
+///
+/// Implementors define how to process side effects that have been stored
+/// in the transactional outbox. The handler controls retry behavior through
+/// its return values.
+///
+/// # Return Values
+///
+/// - `Ok(())` - Side effect processed successfully, message will be deleted
+/// - `Err((true, E))` - Processing failed, message will be requeued for retry
+/// - `Err((false, E))` - Processing failed, message will be marked as non-retryable
 #[async_trait]
 pub trait SideEffectHandler {
     type SideEffect: SideEffect;
@@ -134,9 +144,20 @@ pub trait SideEffectHandler {
 
     /// Handle a side effect message.
     ///
-    /// Returning `Ok(())` deletes the message from the outbox. Returning
-    /// `Err((true, E))` requeues the message. Returning `Err((false, E))`
-    /// leaves the message without requeuing.
+    /// This method is called for each side effect retrieved from the outbox.
+    /// The implementation should process the side effect and return appropriate
+    /// results to control retry behavior.
+    ///
+    /// # Parameters
+    ///
+    /// - `msg` - The side effect to process
+    /// - `retries` - Number of times this message has been retried
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(())` - Processing successful, message will be deleted from outbox
+    /// - `Err((true, E))` - Processing failed, message will be requeued for retry  
+    /// - `Err((false, E))` - Processing failed, message will not be retried
     async fn handle(&self, msg: &Self::SideEffect, retries: u16)
     -> Result<(), (bool, Self::Error)>;
 }

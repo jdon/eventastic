@@ -20,6 +20,11 @@ use sqlx::query_as;
 use sqlx::types::JsonValue;
 use sqlx::types::Uuid;
 use sqlx::{Postgres, Transaction};
+
+/// PostgreSQL transaction wrapper that implements the [`RepositoryTransaction`] trait.
+///
+/// This struct provides transactional access to PostgreSQL storage for event sourcing
+/// operations. It manages database transactions and integrates with side effect storage.
 pub struct PostgresTransaction<'a, O>
 where
     O: SideEffectStorage,
@@ -32,12 +37,18 @@ impl<'a, O> PostgresTransaction<'a, O>
 where
     O: SideEffectStorage,
 {
-    /// Commit the transaction to the db.
+    /// Commit the transaction to the database.
+    ///
+    /// This finalizes all operations performed within this transaction,
+    /// making them permanently visible to other database connections.
     pub async fn commit(self) -> Result<(), DbError> {
         Ok(self.inner.commit().await?)
     }
 
-    /// Rollback the transaction
+    /// Rollback the transaction, discarding all changes.
+    ///
+    /// This undoes all operations performed within this transaction,
+    /// returning the database to its state before the transaction began.
     pub async fn rollback(self) -> Result<(), DbError> {
         Ok(self.inner.rollback().await?)
     }
