@@ -2,7 +2,10 @@ use async_trait::async_trait;
 use futures::Stream;
 use std::fmt::Debug;
 
-use crate::{aggregate::Aggregate, event::EventStoreEvent};
+use crate::{
+    aggregate::Aggregate,
+    event::{DomainEvent, EventStoreEvent},
+};
 
 /// List of possible errors that can be returned by the [`RepositoryTransaction`] trait.
 #[derive(Debug, thiserror::Error)]
@@ -50,23 +53,15 @@ pub trait RepositoryTransaction<T: Aggregate> {
         &mut self,
         id: &T::AggregateId,
         version: u64,
-    ) -> impl Stream<
-        Item = Result<
-            EventStoreEvent<T::DomainEventId, <T as Aggregate>::DomainEvent>,
-            Self::DbError,
-        >,
-    >;
+    ) -> impl Stream<Item = Result<EventStoreEvent<T::DomainEvent>, Self::DbError>>;
 
     // Get a specific event from the event store.
     #[doc(hidden)]
     async fn get_event(
         &mut self,
         aggregate_id: &T::AggregateId,
-        event_id: &T::DomainEventId,
-    ) -> Result<
-        Option<EventStoreEvent<T::DomainEventId, <T as Aggregate>::DomainEvent>>,
-        Self::DbError,
-    >;
+        event_id: &<<T as Aggregate>::DomainEvent as DomainEvent>::EventId,
+    ) -> Result<Option<EventStoreEvent<T::DomainEvent>>, Self::DbError>;
 
     /// Retrieves the latest version of the Aggregate from the Event Store.
     /// This method must check that the snapshot version is correct
@@ -83,8 +78,8 @@ pub trait RepositoryTransaction<T: Aggregate> {
     async fn store_events(
         &mut self,
         id: &T::AggregateId,
-        events: Vec<EventStoreEvent<T::DomainEventId, T::DomainEvent>>,
-    ) -> Result<Vec<T::DomainEventId>, Self::DbError>;
+        events: Vec<EventStoreEvent<T::DomainEvent>>,
+    ) -> Result<Vec<<<T as Aggregate>::DomainEvent as DomainEvent>::EventId>, Self::DbError>;
 
     #[doc(hidden)]
     async fn store_snapshot(&mut self, snapshot: Snapshot<T>) -> Result<(), Self::DbError>;

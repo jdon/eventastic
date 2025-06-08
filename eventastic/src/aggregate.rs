@@ -25,7 +25,7 @@
 //! Aggregates should provide a way to **fold** Domain Events on the
 //! current value of the state, to produce the next state.
 
-use crate::event::Event;
+use crate::event::DomainEvent;
 use std::fmt::Debug;
 
 mod root;
@@ -54,10 +54,7 @@ pub trait Aggregate: Sized + Clone {
 
     /// The type of Domain Events that interest this Aggregate.
     /// Usually, this type should be an `enum`.
-    type DomainEvent: Clone + Debug + Eq + PartialEq + Event<Self::DomainEventId>;
-
-    /// The type used to uniquely identify the given domain event.
-    type DomainEventId: Clone + Debug + Eq + PartialEq;
+    type DomainEvent: Clone + Debug + Eq + PartialEq + DomainEvent;
 
     /// The error type that can be returned by [`Aggregate::apply`] when
     /// mutating the Aggregate state.
@@ -93,8 +90,8 @@ pub trait Aggregate: Sized + Clone {
 
 pub trait SideEffect {
     /// The type used to uniquely identify this side effect.
-    type Id;
+    type SideEffectId;
 
     /// Returns read access to the [`SideEffect::Id`]
-    fn id(&self) -> &Self::Id;
+    fn id(&self) -> &Self::SideEffectId;
 }

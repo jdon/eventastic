@@ -6,7 +6,7 @@ use eventastic::aggregate::Context;
 use eventastic::aggregate::Root;
 use eventastic::aggregate::SaveError;
 use eventastic::aggregate::SideEffect;
-use eventastic::event::Event;
+use eventastic::event::DomainEvent;
 use eventastic_outbox_postgres::{RepositoryOutboxExt, SideEffectHandler, TableOutbox};
 use eventastic_postgres::PostgresRepository;
 use eventastic_postgres::RootExt;
@@ -172,7 +172,8 @@ pub enum AccountEvent {
     },
 }
 
-impl Event<Uuid> for AccountEvent {
+impl DomainEvent for AccountEvent {
+    type EventId = Uuid;
     fn id(&self) -> &Uuid {
         match self {
             AccountEvent::Open { event_id, .. }
@@ -207,9 +208,9 @@ pub enum SideEffects {
 
 impl SideEffect for SideEffects {
     /// The type used to uniquely identify this side effect.
-    type Id = Uuid;
+    type SideEffectId = Uuid;
 
-    fn id(&self) -> &Self::Id {
+    fn id(&self) -> &Self::SideEffectId {
         match self {
             SideEffects::PublishMessage { id, .. } | SideEffects::SendEmail { id, .. } => id,
         }
@@ -241,9 +242,6 @@ impl Aggregate for Account {
     /// The type of Domain Events that interest this Aggregate.
     /// Usually, this type should be an `enum`.
     type DomainEvent = AccountEvent;
-
-    /// The type used to uniquely identify the a given domain event.
-    type DomainEventId = Uuid;
 
     /// The error type that can be returned by [`Aggregate::apply`] when
     /// mutating the Aggregate state.

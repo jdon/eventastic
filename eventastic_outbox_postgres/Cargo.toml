@@ -4,13 +4,13 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-eventastic_postgres = { path = "../eventastic_postgres" }
+eventastic_postgres = { version = "0.5", path = "../eventastic_postgres" }
 async-trait = { workspace = true }
 serde_json = { workspace = true }
 sqlx = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 serde = { workspace = true }
-eventastic = { path = "../eventastic" }
+eventastic = { path = "../eventastic", version = "0.5" }
 futures-util = { workspace = true }
 tokio = { workspace = true }

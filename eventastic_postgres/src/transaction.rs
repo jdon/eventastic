@@ -6,7 +6,7 @@ use chrono::DateTime;
 use chrono::Utc;
 use eventastic::aggregate::Aggregate;
 use eventastic::aggregate::SideEffect;
-use eventastic::event::Event;
+use eventastic::event::DomainEvent;
 use eventastic::event::EventStoreEvent;
 use eventastic::repository::RepositoryTransaction;
 use eventastic::repository::Snapshot;
@@ -61,24 +61,18 @@ struct PartialSnapShotRow {
 }
 
 #[derive(Debug, sqlx::FromRow)]
-struct PartialEventRow<EId>
-where
-    EId: Unpin,
-{
-    event_id: EId,
+struct PartialEventRow {
+    event_id: Uuid,
     version: i64,
     event: JsonValue,
 }
 
-impl<EId> PartialEventRow<EId>
-where
-    EId: Debug + Send + Unpin,
-{
+impl PartialEventRow {
     fn to_event<Evt>(
-        row: PartialEventRow<EId>,
-    ) -> Result<eventastic::event::EventStoreEvent<EId, Evt>, DbError>
+        row: PartialEventRow,
+    ) -> Result<eventastic::event::EventStoreEvent<Evt>, DbError>
     where
-        Evt: Send + Clone + Eq + DeserializeOwned,
+        Evt: DomainEvent<EventId = Uuid> + DeserializeOwned,
     {
         let row_version = u64::try_from(row.version).map_err(|_| DbError::InvalidVersionNumber)?;
 
@@ -93,17 +87,12 @@ where
 }
 
 #[async_trait]
-impl<'a, O, S, T> RepositoryTransaction<T> for PostgresTransaction<'a, O>
+impl<'a, O, T> RepositoryTransaction<T> for PostgresTransaction<'a, O>
 where
+    T: Aggregate<AggregateId = Uuid> + 'a + DeserializeOwned + Serialize + Send + Sync,
+    T::SideEffect: SideEffect<SideEffectId = Uuid> + Serialize + Send + Sync,
+    T::DomainEvent: DomainEvent<EventId = Uuid> + Serialize + DeserializeOwned + Send + Sync,
     O: SideEffectStorage,
-    S: SideEffect<Id = Uuid> + 'a + Serialize + Send + Sync,
-    T: Aggregate<DomainEventId = Uuid, AggregateId = Uuid, SideEffect = S>
-        + 'a
-        + DeserializeOwned
-        + Serialize
-        + Send
-        + Sync,
-    <T as Aggregate>::DomainEvent: Serialize + DeserializeOwned + Send + Sync,
 {
     /// The type of error that is returned from the database.
     type DbError = DbError;
@@ -116,7 +105,6 @@ where
     ) -> impl futures::Stream<
         Item = std::result::Result<
             eventastic::event::EventStoreEvent<
-                <T as eventastic::aggregate::Aggregate>::DomainEventId,
                 <T as eventastic::aggregate::Aggregate>::DomainEvent,
             >,
             <Self as eventastic::repository::RepositoryTransaction<T>>::DbError,
@@ -126,7 +114,7 @@ where
             return stream::iter(vec![Err(DbError::InvalidVersionNumber)]).boxed();
         };
 
-        let res = query_as::<_, PartialEventRow<T::DomainEventId>>(
+        let res = query_as::<_, PartialEventRow>(
             "
                 SELECT event, event_id, version
                 FROM events 
@@ -147,12 +135,9 @@ where
     async fn get_event(
         &mut self,
         aggregate_id: &T::AggregateId,
-        event_id: &T::DomainEventId,
-    ) -> Result<
-        Option<EventStoreEvent<<T as Aggregate>::DomainEventId, <T as Aggregate>::DomainEvent>>,
-        Self::DbError,
-    > {
-        query_as::<_, PartialEventRow<T::DomainEventId>>(
+        event_id: &<<T as Aggregate>::DomainEvent as DomainEvent>::EventId,
+    ) -> Result<Option<EventStoreEvent<<T as Aggregate>::DomainEvent>>, Self::DbError> {
+        query_as::<_, PartialEventRow>(
             "SELECT event, event_id, version FROM events where aggregate_id = $1 AND event_id = $2",
         )
         .bind(aggregate_id)
@@ -167,9 +152,10 @@ where
     async fn store_events(
         &mut self,
         id: &T::AggregateId,
-        events: Vec<EventStoreEvent<T::DomainEventId, T::DomainEvent>>,
-    ) -> Result<Vec<T::DomainEventId>, Self::DbError> {
-        let mut event_ids_to_insert: Vec<T::DomainEventId> = Vec::with_capacity(events.len());
+        events: Vec<EventStoreEvent<T::DomainEvent>>,
+    ) -> Result<Vec<<<T as Aggregate>::DomainEvent as DomainEvent>::EventId>, Self::DbError> {
+        let mut event_ids_to_insert: Vec<<<T as Aggregate>::DomainEvent as DomainEvent>::EventId> =
+            Vec::with_capacity(events.len());
         let mut versions_to_insert: Vec<i64> = Vec::with_capacity(events.len());
         let mut aggregate_ids_to_insert: Vec<T::AggregateId> = Vec::with_capacity(events.len());
         let mut events_to_insert: Vec<serde_json::Value> = Vec::with_capacity(events.len());
@@ -254,15 +240,8 @@ where
         &mut self,
         outbox_item: Vec<T::SideEffect>,
     ) -> Result<(), Self::DbError> {
-        let mut items: Vec<(Uuid, serde_json::Value)> = Vec::with_capacity(outbox_item.len());
-
-        for item in outbox_item {
-            items.push((
-                *item.id(),
-                serde_json::to_value(item).map_err(DbError::SerializationError)?,
-            ));
-        }
-
-        self.outbox.store_side_effects(&mut self.inner, items).await
+        self.outbox
+            .store_side_effects(&mut self.inner, outbox_item)
+            .await
     }
 }

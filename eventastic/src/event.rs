@@ -3,15 +3,14 @@
 
 use std::fmt::Debug;
 
-/// An [`Event`] that will be / has been persisted to the Event Store.
+/// A [`DomainEvent`] that will be / has been persisted to the Event Store.
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub struct EventStoreEvent<Id, Evt>
+pub struct EventStoreEvent<Evt>
 where
-    Id: Debug,
-    Evt: Clone + Eq + PartialEq,
+    Evt: DomainEvent,
 {
     /// The id of the event
-    pub id: Id,
+    pub id: Evt::EventId,
 
     // The version of the event
     pub version: u64,
@@ -20,20 +19,28 @@ where
     pub event: Evt,
 }
 
-/// A domain event.
-pub trait Event<Id>
+impl<Evt> EventStoreEvent<Evt>
 where
-    Id: Debug,
+    Evt: DomainEvent,
 {
-    fn id(&self) -> &Id;
-}
+    /// Creates a new `EventStoreEvent`.
+    pub fn new(id: Evt::EventId, version: u64, event: Evt) -> Self {
+        Self { id, version, event }
+    }
 
-impl<Id, Evt> Event<Id> for EventStoreEvent<Id, Evt>
-where
-    Id: Debug,
-    Evt: Clone + Eq + PartialEq,
-{
-    fn id(&self) -> &Id {
+    /// Returns the id of the event.
+    pub fn id(&self) -> &Evt::EventId {
         &self.id
     }
+
+    /// Returns the version of the event.
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+}
+
+/// A domain event.
+pub trait DomainEvent: Clone + Eq + PartialEq {
+    type EventId: Debug + Clone + Eq + PartialEq;
+    fn id(&self) -> &Self::EventId;
 }

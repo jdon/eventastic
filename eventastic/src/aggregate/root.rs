@@ -3,7 +3,7 @@ use futures::TryStreamExt;
 use crate::repository::{RepositoryError, RepositoryTransaction, Snapshot};
 use crate::{
     aggregate::Aggregate,
-    event::{Event, EventStoreEvent},
+    event::{DomainEvent, EventStoreEvent},
 };
 use std::fmt::Debug;
 
@@ -17,7 +17,7 @@ where
 {
     aggregate: T,
     version: u64,
-    uncommitted_events: Vec<EventStoreEvent<T::DomainEventId, T::DomainEvent>>,
+    uncommitted_events: Vec<EventStoreEvent<T::DomainEvent>>,
     uncommitted_side_effects: Vec<T::SideEffect>,
 }
 
@@ -43,9 +43,7 @@ where
     /// Returns the list of uncommitted, recorded Domain [Events] from the [Context]
     /// and resets the internal list to its default value.
     #[doc(hidden)]
-    pub fn take_uncommitted_events(
-        &mut self,
-    ) -> Vec<EventStoreEvent<T::DomainEventId, T::DomainEvent>> {
+    pub fn take_uncommitted_events(&mut self) -> Vec<EventStoreEvent<T::DomainEvent>> {
         std::mem::take(&mut self.uncommitted_events)
     }
 
@@ -65,7 +63,7 @@ where
     /// given the current state of the Aggregate.
     #[doc(hidden)]
     pub fn rehydrate_from(
-        event: &EventStoreEvent<T::DomainEventId, T::DomainEvent>,
+        event: &EventStoreEvent<T::DomainEvent>,
     ) -> Result<Context<T>, T::ApplyError> {
         Ok(Context {
             version: event.version,
@@ -85,7 +83,7 @@ where
     #[doc(hidden)]
     pub fn apply_rehydrated_event(
         mut self,
-        event: &EventStoreEvent<T::DomainEventId, T::DomainEvent>,
+        event: &EventStoreEvent<T::DomainEvent>,
     ) -> Result<Context<T>, T::ApplyError> {
         self.version += 1;
         debug_assert!(self.version == event.version);
@@ -220,7 +218,14 @@ where
     pub async fn load<R>(
         transaction: &mut R,
         aggregate_id: &T::AggregateId,
-    ) -> Result<Context<T>, RepositoryError<T::ApplyError, T::DomainEventId, R::DbError>>
+    ) -> Result<
+        Context<T>,
+        RepositoryError<
+            T::ApplyError,
+            <<T as Aggregate>::DomainEvent as DomainEvent>::EventId,
+            R::DbError,
+        >,
+    >
     where
         R: RepositoryTransaction<T>,
     {

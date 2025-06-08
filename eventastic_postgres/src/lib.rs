@@ -1,16 +1,17 @@
-mod outbox;
 mod repository;
+mod side_effect;
 mod transaction;
 use async_trait::async_trait;
 use eventastic::{
     aggregate::{Aggregate, Context, SideEffect},
+    event::DomainEvent,
     repository::RepositoryError,
 };
-pub use outbox::OutboxMessage;
 pub use repository::PostgresRepository;
 use serde::{Serialize, de::DeserializeOwned};
+pub use side_effect::SideEffectStorage;
 use sqlx::types::Uuid;
-use sqlx::{Postgres, Transaction};
+
 use thiserror::Error;
 pub use transaction::PostgresTransaction;
 
@@ -42,45 +43,35 @@ impl From<sqlx::Error> for DbError {
 }
 
 #[async_trait]
-pub trait SideEffectStorage: Send + Sync {
-    async fn store_side_effects(
-        &self,
-        transaction: &mut Transaction<'_, Postgres>,
-        items: Vec<(Uuid, serde_json::Value)>,
-    ) -> Result<(), DbError>;
-}
-
-#[async_trait]
-pub trait RootExt<S, T, O>
+pub trait RootExt<T, O>
 where
-    S: SideEffect<Id = Uuid> + Serialize + Send + Sync + 'static,
-    T: Aggregate<AggregateId = Uuid, DomainEventId = Uuid, SideEffect = S>
-        + Serialize
-        + DeserializeOwned
-        + Send
-        + Sync
-        + 'static,
-    <T as Aggregate>::DomainEvent: Serialize + DeserializeOwned + Send + Sync,
+    T: Aggregate<AggregateId = Uuid> + Serialize + DeserializeOwned + Send + Sync + 'static,
+    <T as Aggregate>::DomainEvent:
+        DomainEvent<EventId = Uuid> + Serialize + DeserializeOwned + Send + Sync,
+    <T as Aggregate>::SideEffect: SideEffect<SideEffectId = Uuid> + Serialize + Send + Sync,
     O: SideEffectStorage + Send + Sync,
 {
     async fn load(
         transaction: &mut PostgresTransaction<'_, O>,
         aggregate_id: Uuid,
-    ) -> Result<Context<T>, RepositoryError<T::ApplyError, T::DomainEventId, DbError>> {
+    ) -> Result<
+        Context<T>,
+        RepositoryError<
+            T::ApplyError,
+            <<T as Aggregate>::DomainEvent as DomainEvent>::EventId,
+            DbError,
+        >,
+    > {
         Context::load(transaction, &aggregate_id).await
     }
 }
 
-impl<S, T, O> RootExt<S, T, O> for T
+impl<T, O> RootExt<T, O> for T
 where
-    S: SideEffect<Id = Uuid> + Serialize + Send + Sync + 'static,
-    T: Aggregate<AggregateId = Uuid, DomainEventId = Uuid, SideEffect = S>
-        + Serialize
-        + DeserializeOwned
-        + Send
-        + Sync
-        + 'static,
-    <T as Aggregate>::DomainEvent: Serialize + DeserializeOwned + Send + Sync,
+    T: Aggregate<AggregateId = Uuid> + Serialize + DeserializeOwned + Send + Sync + 'static,
+    <T as Aggregate>::DomainEvent:
+        DomainEvent<EventId = Uuid> + Serialize + DeserializeOwned + Send + Sync,
+    <T as Aggregate>::SideEffect: SideEffect<SideEffectId = Uuid> + Serialize + Send + Sync,
     O: SideEffectStorage + Send + Sync,
 {
 }
