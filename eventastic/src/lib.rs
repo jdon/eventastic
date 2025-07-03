@@ -9,7 +9,7 @@
 //!
 //! - [`aggregate::Aggregate`] trait for modelling domain aggregates
 //! - [`event::DomainEvent`] trait for representing domain events
-//! - [`repository::RepositoryTransaction`] trait for persisting and loading aggregates
+//! - [`repository::RepositoryTransaction`] trait for loading and persisting aggregates
 //! - Context management for recording and applying events
 //!
 //! ## Example

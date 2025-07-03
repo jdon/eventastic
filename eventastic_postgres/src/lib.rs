@@ -32,19 +32,23 @@
 //! ).await?;
 //! ```
 
+mod common;
+mod reader_impl;
 mod repository;
 mod side_effect;
+mod table_registry;
 mod transaction;
 use async_trait::async_trait;
 use eventastic::{
     aggregate::{Aggregate, Context, SideEffect},
     event::DomainEvent,
-    repository::RepositoryError,
+    repository::{Repository, RepositoryError},
 };
 pub use repository::PostgresRepository;
 use serde::{Serialize, de::DeserializeOwned};
 pub use side_effect::SideEffectStorage;
 use sqlx::types::Uuid;
+pub use table_registry::{TableConfig, TableRegistry, TableRegistryBuilder};
 
 use thiserror::Error;
 pub use transaction::PostgresTransaction;
@@ -67,6 +71,9 @@ pub enum DbError {
     /// A concurrent modification was detected (optimistic locking failure).
     #[error("Optimistic Concurrency Error")]
     OptimisticConcurrencyError,
+    /// An aggregate type was not registered in the table registry.
+    #[error("Aggregate type not registered in table registry")]
+    UnregisteredAggregate,
 }
 
 impl From<sqlx::Error> for DbError {
@@ -95,11 +102,11 @@ where
     <T as Aggregate>::SideEffect: SideEffect<SideEffectId = Uuid> + Serialize + Send + Sync,
     O: SideEffectStorage + Send + Sync,
 {
-    /// Loads an aggregate from PostgreSQL storage by its UUID.
+    /// Loads an aggregate from PostgreSQL storage by its UUID using an existing transaction.
     ///
     /// This method replays the event stream for the given aggregate ID,
     /// starting from any available snapshot and applying subsequent events.
-    async fn load(
+    async fn load_with_transaction(
         transaction: &mut PostgresTransaction<'_, O>,
         aggregate_id: Uuid,
     ) -> Result<
@@ -111,6 +118,27 @@ where
         >,
     > {
         Context::load(transaction, &aggregate_id).await
+    }
+
+    /// Loads an aggregate from PostgreSQL storage by its UUID without a transaction.
+    ///
+    /// This method is more efficient for read-only operations as it uses a
+    /// connection directly from the pool without starting a transaction.
+    async fn load(
+        repository: &PostgresRepository<O>,
+        aggregate_id: Uuid,
+    ) -> Result<
+        Context<T>,
+        RepositoryError<
+            T::ApplyError,
+            <<T as Aggregate>::DomainEvent as DomainEvent>::EventId,
+            DbError,
+        >,
+    >
+    where
+        O: Clone,
+    {
+        repository.load(&aggregate_id).await
     }
 }
 

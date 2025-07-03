@@ -1,8 +1,8 @@
 # Eventastic
 
-This is an opinionated fork of [Eventually-rs](https://github.com/get-eventually/eventually-rs).
+A type-safe event sourcing and CQRS library for Rust with PostgreSQL persistence. 
 
-Eventastic enforces the use of transactions, handles idempotency and removes command handling abstractions.
+Eventastic provides strong consistency guarantees through mandatory transactions, built-in idempotency checking, and reliable side effect processing via the transactional outbox pattern. Designed for building event-driven systems that require data integrity and audit trails.
 
 ## Examples
 See full examples in [examples/bank](https://github.com/jdon/eventastic/blob/main/examples/bank/src/main.rs)
@@ -13,13 +13,17 @@ async fn main() -> Result<(), anyhow::Error> {
     // Setup postgres repo
     let repository = get_repository().await;
 
-    // Run our side effects handler in a background task
-    tokio::spawn(async {
-        let repository = get_repository().await;
+    // Migrate the db
+    repository.run_migrations().await?;
 
-        let _ = repository
-            .start_outbox(SideEffectContext {}, std::time::Duration::from_secs(5))
-            .await;
+    // Run our side effects handler in a background task
+    tokio::spawn({
+        let repo = repository.clone();
+        async move {
+            let _ = repo
+                .start_outbox(SideEffectContext {}, std::time::Duration::from_secs(5))
+                .await;
+        }
     });
 
     // Start transaction
@@ -47,11 +51,8 @@ async fn main() -> Result<(), anyhow::Error> {
         amount: 324,
     };
 
-    // Record add fund events.
-    // Record takes in the transaction, as it does idempotency checks with the db.
-    account
-        .record_that(&mut transaction, add_event.clone())
-        .await?;
+    // Record add fund events (events are applied in-memory)
+    account.record_that(add_event.clone())?;
 
     // Save uncommitted events and side effects in the db.
     transaction.store(&mut account).await?;
@@ -59,13 +60,18 @@ async fn main() -> Result<(), anyhow::Error> {
     // Commit the transaction
     transaction.commit().await?;
 
-    // Get the aggregate from the db
+    // Get the aggregate from the db using a transaction (read-write access)
     let mut transaction = repository.begin_transaction().await?;
 
-    let mut account: Context<Account> = transaction.get(&account_id).await?;
+    let mut account = Account::load_with_transaction(&mut transaction, account_id).await?;
 
     // Check our balance is correct
     assert_eq!(account.state().balance, 345);
+
+    // Demonstrate loading without a transaction (read-only access, more efficient)
+    let account_readonly: Context<Account> = repository.load(&account_id).await?;
+    assert_eq!(account_readonly.state().balance, 345);
+    println!("Successfully loaded account with non-transactional method");
 
     // Trying to apply the same event id but with different content gives us an IdempotencyError
     let changed_add_event = AccountEvent::Add {
@@ -73,15 +79,15 @@ async fn main() -> Result<(), anyhow::Error> {
         amount: 123,
     };
 
-    let err = account
-        .record_that(&mut transaction, changed_add_event)
+    account.record_that(changed_add_event)?;
+
+    // Idempotency errors occur when storing, not when recording events
+    let err = transaction
+        .store(&mut account)
         .await
-        .expect_err("failed to get error");
+        .expect_err("Failed to get idempotency error");
 
-    assert!(matches!(err, RecordError::IdempotencyError(_, _)));
-
-    // Applying the already applied event, will be ignored and return Ok
-    account.record_that(&mut transaction, add_event).await?;
+    assert!(matches!(err, SaveError::IdempotencyError(_, _)));
 
     transaction.commit().await?;
 
@@ -93,7 +99,5 @@ async fn main() -> Result<(), anyhow::Error> {
     assert_eq!(account.state().balance, 345);
 
     println!("Got account {account:?}");
-
-    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
     Ok(())
 }

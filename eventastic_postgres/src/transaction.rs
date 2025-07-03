@@ -1,23 +1,19 @@
-use std::fmt::Debug;
-
-use crate::{DbError, SideEffectStorage};
+use crate::common::utils;
+use crate::{DbError, SideEffectStorage, TableRegistry, reader_impl};
 use async_trait::async_trait;
 use chrono::DateTime;
 use chrono::Utc;
-use eventastic::aggregate::Aggregate;
+use eventastic::aggregate::SaveError;
 use eventastic::aggregate::SideEffect;
+use eventastic::aggregate::{Aggregate, Context};
 use eventastic::event::DomainEvent;
 use eventastic::event::EventStoreEvent;
-use eventastic::repository::RepositoryTransaction;
 use eventastic::repository::Snapshot;
-use futures::stream;
-use futures_util::stream::StreamExt;
+use eventastic::repository::{RepositoryError, RepositoryReader, RepositoryTransaction};
+use futures::StreamExt;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use sqlx::Row;
-use sqlx::query;
-use sqlx::query_as;
-use sqlx::types::JsonValue;
 use sqlx::types::Uuid;
 use sqlx::{Postgres, Transaction};
 
@@ -31,6 +27,7 @@ where
 {
     pub(crate) inner: Transaction<'a, Postgres>,
     pub(crate) outbox: &'a O,
+    pub(crate) tables: &'a TableRegistry,
 }
 
 impl<'a, O> PostgresTransaction<'a, O>
@@ -62,50 +59,42 @@ where
     pub fn inner_mut(&mut self) -> &mut Transaction<'a, Postgres> {
         &mut self.inner
     }
-}
 
-#[derive(sqlx::FromRow)]
-struct PartialSnapShotRow {
-    aggregate: serde_json::Value,
-    snapshot_version: i64,
-    version: i64,
-}
-
-#[derive(Debug, sqlx::FromRow)]
-struct PartialEventRow {
-    event_id: Uuid,
-    version: i64,
-    event: JsonValue,
-}
-
-impl PartialEventRow {
-    fn to_event<Evt>(
-        row: PartialEventRow,
-    ) -> Result<eventastic::event::EventStoreEvent<Evt>, DbError>
+    /// Get an aggregate by ID using the table registry.
+    pub async fn get<T>(
+        &mut self,
+        id: &Uuid,
+    ) -> Result<Context<T>, RepositoryError<T::ApplyError, Uuid, DbError>>
     where
-        Evt: DomainEvent<EventId = Uuid> + DeserializeOwned,
+        T: Aggregate<AggregateId = Uuid> + 'static + Send + Sync + Serialize + DeserializeOwned,
+        T::DomainEvent: DomainEvent<EventId = Uuid> + Serialize + DeserializeOwned + Send + Sync,
+        T::SideEffect: SideEffect<SideEffectId = Uuid> + Serialize + Send + Sync,
     {
-        let row_version = u64::try_from(row.version).map_err(|_| DbError::InvalidVersionNumber)?;
+        Context::load(self, id).await
+    }
 
-        serde_json::from_value::<Evt>(row.event)
-            .map(|e| EventStoreEvent {
-                id: row.event_id,
-                event: e,
-                version: row_version,
-            })
-            .map_err(DbError::SerializationError)
+    /// Store an aggregate using the table registry.
+    pub async fn store<T>(
+        &mut self,
+        aggregate: &mut Context<T>,
+    ) -> Result<(), SaveError<T, DbError>>
+    where
+        T: Aggregate<AggregateId = Uuid> + 'static + Send + Sync + Serialize + DeserializeOwned,
+        T::DomainEvent: DomainEvent<EventId = Uuid> + Serialize + DeserializeOwned + Send + Sync,
+        T::SideEffect: SideEffect<SideEffectId = Uuid> + Serialize + Send + Sync,
+    {
+        aggregate.save(self).await
     }
 }
 
 #[async_trait]
-impl<'a, O, T> RepositoryTransaction<T> for PostgresTransaction<'a, O>
+impl<O, T> RepositoryReader<T> for PostgresTransaction<'_, O>
 where
-    T: Aggregate<AggregateId = Uuid> + 'a + DeserializeOwned + Serialize + Send + Sync,
+    T: Aggregate<AggregateId = Uuid> + 'static + DeserializeOwned + Serialize + Send + Sync,
     T::SideEffect: SideEffect<SideEffectId = Uuid> + Serialize + Send + Sync,
     T::DomainEvent: DomainEvent<EventId = Uuid> + Serialize + DeserializeOwned + Send + Sync,
     O: SideEffectStorage,
 {
-    /// The type of error that is returned from the database.
     type DbError = DbError;
 
     /// Returns a stream of domain events.
@@ -118,28 +107,21 @@ where
             eventastic::event::EventStoreEvent<
                 <T as eventastic::aggregate::Aggregate>::DomainEvent,
             >,
-            <Self as eventastic::repository::RepositoryTransaction<T>>::DbError,
+            Self::DbError,
         >,
     > {
-        let Ok(version) = i64::try_from(version) else {
-            return stream::iter(vec![Err(DbError::InvalidVersionNumber)]).boxed();
+        let query = match self.tables.stream_events_query::<T>() {
+            Some(query) => query.to_string(),
+            None => {
+                return futures::stream::iter(vec![Err(DbError::UnregisteredAggregate)]).boxed();
+            }
         };
-
-        let res = query_as::<_, PartialEventRow>(
-            "
-                SELECT event, event_id, version
-                FROM events 
-                where aggregate_id = $1 AND version >= $2 ORDER BY version ASC",
-        )
-        .bind(*id)
-        .bind(version)
-        .fetch(&mut *self.inner);
-
-        res.map(|row| match row {
-            Ok(row) => PartialEventRow::to_event(row),
-            Err(e) => Err(DbError::DbError(e)),
-        })
-        .boxed()
+        Box::pin(reader_impl::stream_from::<_, T>(
+            &mut *self.inner,
+            id,
+            version,
+            query,
+        ))
     }
 
     /// Returns a specific domain event from the database.
@@ -148,17 +130,34 @@ where
         aggregate_id: &T::AggregateId,
         event_id: &<<T as Aggregate>::DomainEvent as DomainEvent>::EventId,
     ) -> Result<Option<EventStoreEvent<<T as Aggregate>::DomainEvent>>, Self::DbError> {
-        query_as::<_, PartialEventRow>(
-            "SELECT event, event_id, version FROM events where aggregate_id = $1 AND event_id = $2",
-        )
-        .bind(aggregate_id)
-        .bind(event_id)
-        .fetch_optional(&mut *self.inner)
-        .await?
-        .map(PartialEventRow::to_event)
-        .transpose()
+        let query = self
+            .tables
+            .get_event_query::<T>()
+            .ok_or(DbError::UnregisteredAggregate)?;
+        reader_impl::get_event::<_, T>(&mut *self.inner, aggregate_id, event_id, query).await
     }
 
+    /// Returns a snapshot of the aggregate in the database
+    async fn get_snapshot(
+        &mut self,
+        id: &T::AggregateId,
+    ) -> Result<Option<Snapshot<T>>, Self::DbError> {
+        let query = self
+            .tables
+            .get_snapshot_query::<T>()
+            .ok_or(DbError::UnregisteredAggregate)?;
+        reader_impl::get_snapshot::<_, T>(&mut *self.inner, id, query).await
+    }
+}
+
+#[async_trait]
+impl<O, T> RepositoryTransaction<T> for PostgresTransaction<'_, O>
+where
+    T: Aggregate<AggregateId = Uuid> + 'static + DeserializeOwned + Serialize + Send + Sync,
+    T::SideEffect: SideEffect<SideEffectId = Uuid> + Serialize + Send + Sync,
+    T::DomainEvent: DomainEvent<EventId = Uuid> + Serialize + DeserializeOwned + Send + Sync,
+    O: SideEffectStorage,
+{
     /// Stores new domain events to the database
     async fn store_events(
         &mut self,
@@ -176,7 +175,7 @@ where
             let event_id = *event.id();
             let version = event.version;
 
-            let version = i64::try_from(version).map_err(|_| DbError::InvalidVersionNumber)?;
+            let version = utils::version_to_i64(version)?;
 
             let serialised_event =
                 serde_json::to_value(event.event).map_err(DbError::SerializationError)?;
@@ -188,44 +187,25 @@ where
             created_ats_to_insert.push(Utc::now());
         }
 
-        let inserted_ids:Result<Vec<Uuid>, sqlx::Error> = sqlx::query(
-            "INSERT INTO events(event_id, version, aggregate_id, event, created_at) 
-            SELECT * FROM UNNEST($1::uuid[], $2::bigint[], $3::uuid[], $4::jsonb[], $5::timestamptz[])
-            ON CONFLICT DO NOTHING returning event_id",
-        ).bind(&event_ids_to_insert[..]).bind(&versions_to_insert[..]).bind(&aggregate_ids_to_insert[..]).bind(&events_to_insert[..]).bind(&created_ats_to_insert[..])
-        .fetch_all(&mut *self.inner).await?.into_iter().map(|row|row.try_get(0)).collect();
+        let insert_query = self
+            .tables
+            .insert_events_query::<T>()
+            .ok_or(DbError::UnregisteredAggregate)?;
+
+        let inserted_ids: Result<Vec<Uuid>, sqlx::Error> =
+            sqlx::query(insert_query)
+                .bind(&event_ids_to_insert[..])
+                .bind(&versions_to_insert[..])
+                .bind(&aggregate_ids_to_insert[..])
+                .bind(&events_to_insert[..])
+                .bind(&created_ats_to_insert[..])
+                .fetch_all(&mut *self.inner)
+                .await?
+                .into_iter()
+                .map(|row| row.try_get(0))
+                .collect();
 
         Ok(inserted_ids?)
-    }
-
-    /// Returns a snapshot of the aggregate in the database
-    async fn get_snapshot(
-        &mut self,
-        id: &T::AggregateId,
-    ) -> Result<Option<Snapshot<T>>, Self::DbError> {
-        let row = query_as::<_, PartialSnapShotRow>(
-            "SELECT aggregate, version, snapshot_version from snapshots where aggregate_id = $1 AND snapshot_version = $2",
-        )
-        .bind(id)
-        .bind(i64::try_from(T::SNAPSHOT_VERSION).map_err(|_| DbError::InvalidSnapshotVersion)?)
-        .fetch_optional(&mut *self.inner)
-        .await?;
-
-        let Some(row) = row else {
-            return Ok(None);
-        };
-
-        let version = u64::try_from(row.version).map_err(|_| DbError::InvalidVersionNumber)?;
-        let snapshot_version =
-            u64::try_from(row.snapshot_version).map_err(|_| DbError::InvalidSnapshotVersion)?;
-        let aggregate: T =
-            serde_json::from_value(row.aggregate).map_err(DbError::SerializationError)?;
-
-        Ok(Some(Snapshot {
-            aggregate,
-            version,
-            snapshot_version,
-        }))
     }
 
     /// Stores a snapshot of the aggregate in the database
@@ -233,11 +213,17 @@ where
         let aggregated_id = *snapshot.aggregate.aggregate_id();
         let aggregate =
             serde_json::to_value(snapshot.aggregate).map_err(DbError::SerializationError)?;
-        query("INSERT INTO snapshots(aggregate_id, aggregate, version, snapshot_version, created_at) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (aggregate_id) DO UPDATE SET aggregate = $2, version = $3, snapshot_version = $4, created_at = $5")
+
+        let upsert_query = self
+            .tables
+            .upsert_snapshot_query::<T>()
+            .ok_or(DbError::UnregisteredAggregate)?;
+
+        sqlx::query(upsert_query)
             .bind(aggregated_id)
             .bind(aggregate)
-            .bind(i64::try_from(snapshot.version).map_err(|_| DbError::InvalidVersionNumber)?)
-            .bind(i64::try_from(snapshot.snapshot_version).map_err(|_| DbError::InvalidSnapshotVersion)?)
+            .bind(utils::version_to_i64(snapshot.version)?)
+            .bind(utils::snapshot_version_to_i64(snapshot.snapshot_version)?)
             .bind(Utc::now())
             .execute(&mut *self.inner)
             .await?;

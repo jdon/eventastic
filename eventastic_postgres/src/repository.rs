@@ -1,7 +1,16 @@
-use crate::{PostgresTransaction, SideEffectStorage};
+use crate::{DbError, PostgresTransaction, SideEffectStorage, TableRegistry, reader_impl};
+use async_trait::async_trait;
+use eventastic::{
+    aggregate::{Aggregate, Context, SideEffect},
+    event::{DomainEvent, EventStoreEvent},
+    repository::{Repository, RepositoryError, RepositoryReader, Snapshot},
+};
+use futures::StreamExt;
+use serde::{Serialize, de::DeserializeOwned};
 use sqlx::{
     Pool, Postgres,
     postgres::{PgConnectOptions, PgPoolOptions},
+    types::Uuid,
 };
 
 /// PostgreSQL-based repository implementation for event sourcing.
@@ -16,6 +25,7 @@ where
 {
     pub(crate) inner: Pool<Postgres>,
     pub(crate) outbox: O,
+    pub(crate) tables: TableRegistry,
 }
 
 impl<O> PostgresRepository<O>
@@ -29,16 +39,19 @@ where
     /// - `connect_options` - PostgreSQL connection configuration
     /// - `pool_options` - Connection pool configuration  
     /// - `outbox` - Side effect storage implementation for the outbox pattern
+    /// - `tables` - Registry of table configurations for different aggregates
     pub async fn new(
         connect_options: PgConnectOptions,
         pool_options: PgPoolOptions,
         outbox: O,
+        tables: TableRegistry,
     ) -> Result<Self, sqlx::Error> {
         let pool = pool_options.connect_with(connect_options).await?;
 
         Ok(Self {
             inner: pool,
             outbox,
+            tables,
         })
     }
 
@@ -50,6 +63,7 @@ where
         Ok(PostgresTransaction {
             inner: self.inner.begin().await?,
             outbox: &self.outbox,
+            tables: &self.tables,
         })
     }
 
@@ -62,5 +76,95 @@ where
         sqlx::migrate!("./migrations").run(&self.inner).await?;
 
         Ok(())
+    }
+}
+
+#[async_trait]
+impl<O, T> RepositoryReader<T> for PostgresRepository<O>
+where
+    T: Aggregate<AggregateId = Uuid> + DeserializeOwned + Serialize + Send + Sync + 'static,
+    T::DomainEvent: DomainEvent<EventId = Uuid> + Serialize + DeserializeOwned + Send + Sync,
+    T::SideEffect: SideEffect<SideEffectId = Uuid> + Serialize + Send + Sync,
+    O: SideEffectStorage + Clone + Send + Sync,
+{
+    type DbError = DbError;
+
+    /// Returns a stream of domain events.
+    fn stream_from(
+        &mut self,
+        id: &T::AggregateId,
+        version: u64,
+    ) -> impl futures::Stream<
+        Item = std::result::Result<
+            eventastic::event::EventStoreEvent<
+                <T as eventastic::aggregate::Aggregate>::DomainEvent,
+            >,
+            Self::DbError,
+        >,
+    > {
+        let query = match self.tables.stream_events_query::<T>() {
+            Some(query) => query.to_string(),
+            None => {
+                return futures::stream::iter(vec![Err(DbError::UnregisteredAggregate)]).boxed();
+            }
+        };
+        Box::pin(reader_impl::stream_from::<_, T>(
+            &self.inner,
+            id,
+            version,
+            query,
+        ))
+    }
+
+    /// Returns a specific domain event from the database.
+    async fn get_event(
+        &mut self,
+        aggregate_id: &T::AggregateId,
+        event_id: &<<T as Aggregate>::DomainEvent as DomainEvent>::EventId,
+    ) -> Result<Option<EventStoreEvent<<T as Aggregate>::DomainEvent>>, Self::DbError> {
+        let query = self
+            .tables
+            .get_event_query::<T>()
+            .ok_or(DbError::UnregisteredAggregate)?;
+        reader_impl::get_event::<_, T>(&self.inner, aggregate_id, event_id, query).await
+    }
+
+    /// Returns a snapshot of the aggregate in the database
+    async fn get_snapshot(
+        &mut self,
+        id: &T::AggregateId,
+    ) -> Result<Option<Snapshot<T>>, Self::DbError> {
+        let query = self
+            .tables
+            .get_snapshot_query::<T>()
+            .ok_or(DbError::UnregisteredAggregate)?;
+        reader_impl::get_snapshot::<_, T>(&self.inner, id, query).await
+    }
+}
+
+#[async_trait]
+impl<O, T> Repository<T> for PostgresRepository<O>
+where
+    T: Aggregate<AggregateId = Uuid> + DeserializeOwned + Serialize + Send + Sync + 'static,
+    T::DomainEvent: DomainEvent<EventId = Uuid> + Serialize + DeserializeOwned + Send + Sync,
+    T::SideEffect: eventastic::aggregate::SideEffect<SideEffectId = Uuid> + Serialize + Send + Sync,
+    O: SideEffectStorage + Clone + Send + Sync,
+{
+    type Error = RepositoryError<
+        T::ApplyError,
+        <<T as Aggregate>::DomainEvent as DomainEvent>::EventId,
+        DbError,
+    >;
+
+    /// Loads an aggregate from the repository by its ID.
+    ///
+    /// This method performs a non-transactional read directly from the pool,
+    /// avoiding the overhead of starting a transaction. It will load the
+    /// latest state of the aggregate by replaying its event stream.
+    /// If a snapshot is available, it will be used to optimize the loading process.
+    async fn load(&self, aggregate_id: &T::AggregateId) -> Result<Context<T>, Self::Error> {
+        // Create a mutable reference to self to satisfy the RepositoryReader trait
+        let mut repo_ref = self.clone();
+        Context::load(&mut repo_ref, aggregate_id).await
     }
 }

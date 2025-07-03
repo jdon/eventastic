@@ -437,3 +437,33 @@ pub async fn repository_error_handling_and_recovery() {
         "Account balance should reflect recovery operation"
     );
 }
+
+#[tokio::test]
+pub async fn repository_load_works_without_transaction() {
+    use common::test_aggregate::Account;
+    use eventastic::repository::Repository;
+
+    // Arrange
+    let repository = get_repository().await;
+    let account = AccountBuilder::new()
+        .with_add_event(100)
+        .with_remove_event(20)
+        .save()
+        .await;
+    let account_id = account.state().account_id;
+    let expected_balance = account.state().balance;
+
+    // Act - Load using the new Repository::load method (no transaction needed)
+    let loaded_account: Context<Account> = repository
+        .load(&account_id)
+        .await
+        .expect("Failed to load account using Repository::load");
+
+    // Assert
+    assert_eq!(loaded_account.state().account_id, account_id);
+    assert_eq!(loaded_account.state().balance, expected_balance);
+
+    // Verify it loads the same data as the transaction-based approach
+    let transaction_loaded_account = load_account(account_id).await;
+    assert_eq!(loaded_account.state(), transaction_loaded_account.state());
+}

@@ -1,6 +1,6 @@
 use futures::TryStreamExt;
 
-use crate::repository::{RepositoryError, RepositoryTransaction, Snapshot};
+use crate::repository::{RepositoryError, RepositoryReader, RepositoryTransaction, Snapshot};
 use crate::{
     aggregate::Aggregate,
     event::{DomainEvent, EventStoreEvent},
@@ -151,10 +151,7 @@ where
     /// - [`SaveError::Repository`] - Database or storage errors
     /// - [`SaveError::IdempotencyError`] - When an event with the same ID but different content exists
     /// - [`SaveError::OptimisticConcurrency`] - When a concurrent modification is detected
-    pub async fn save<R>(
-        &mut self,
-        transaction: &mut R,
-    ) -> Result<(), SaveError<T, <R as RepositoryTransaction<T>>::DbError>>
+    pub async fn save<R>(&mut self, transaction: &mut R) -> Result<(), SaveError<T, R::DbError>>
     where
         R: RepositoryTransaction<T>,
     {
@@ -225,7 +222,7 @@ where
     }
 
     /// Loads an aggregate from the repository by replaying its event stream.
-    /// 
+    ///
     /// This method first attempts to load a snapshot if available, then replays
     /// any events that occurred after the snapshot to reconstruct the current state.
     ///
@@ -236,7 +233,7 @@ where
     /// - [`RepositoryError::Apply`] - When an event cannot be applied to the aggregate
     /// - [`RepositoryError::Repository`] - When the underlying storage fails
     pub async fn load<R>(
-        transaction: &mut R,
+        reader: &mut R,
         aggregate_id: &T::AggregateId,
     ) -> Result<
         Context<T>,
@@ -247,9 +244,9 @@ where
         >,
     >
     where
-        R: RepositoryTransaction<T>,
+        R: RepositoryReader<T>,
     {
-        let snapshot = transaction.get_snapshot(aggregate_id).await?;
+        let snapshot = reader.get_snapshot(aggregate_id).await?;
 
         let (context, version) = snapshot
             .map(|s| {
@@ -265,7 +262,7 @@ where
             })
             .unwrap_or((None, 0));
 
-        let ctx = transaction
+        let ctx = reader
             .stream_from(aggregate_id, version)
             .map_err(RepositoryError::Repository)
             .try_fold(context, |ctx: Option<Context<T>>, event| async move {

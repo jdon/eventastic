@@ -7,9 +7,9 @@ use eventastic::aggregate::Root;
 use eventastic::aggregate::SaveError;
 use eventastic::aggregate::SideEffect;
 use eventastic::event::DomainEvent;
+use eventastic::repository::Repository;
 use eventastic_outbox_postgres::{RepositoryOutboxExt, SideEffectHandler, TableOutbox};
-use eventastic_postgres::PostgresRepository;
-use eventastic_postgres::RootExt;
+use eventastic_postgres::{PostgresRepository, RootExt};
 use serde::Deserialize;
 use serde::Serialize;
 use sqlx::{pool::PoolOptions, postgres::PgConnectOptions};
@@ -64,18 +64,23 @@ async fn main() -> Result<(), anyhow::Error> {
     account.record_that(add_event.clone())?;
 
     // Save uncommitted events and side effects in the db.
-    account.save(&mut transaction).await?;
+    transaction.store(&mut account).await?;
 
     // Commit the transaction
     transaction.commit().await?;
 
-    // Get the aggregate from the db
+    // Get the aggregate from the db using a transaction (read-write access)
     let mut transaction = repository.begin_transaction().await?;
 
-    let mut account = Account::load(&mut transaction, account_id).await?;
+    let mut account = Account::load_with_transaction(&mut transaction, account_id).await?;
 
     // Check our balance is correct
     assert_eq!(account.state().balance, 345);
+
+    // Demonstrate loading without a transaction (read-only access, more efficient)
+    let account_readonly: Context<Account> = repository.load(&account_id).await?;
+    assert_eq!(account_readonly.state().balance, 345);
+    println!("Successfully loaded account with non-transactional method");
 
     // Trying to apply the same event id but with different content gives us an IdempotencyError
     let changed_add_event = AccountEvent::Add {
@@ -85,9 +90,9 @@ async fn main() -> Result<(), anyhow::Error> {
 
     account.record_that(changed_add_event)?;
 
-    // Applying the already applied event, will be ignored and return Ok
-    let error = account
-        .save(&mut transaction)
+    // Applying the already applied event with different content should fail with an IdempotencyError
+    let error = transaction
+        .store(&mut account)
         .await
         .expect_err("Failed to get idempotency error");
 
@@ -99,10 +104,9 @@ async fn main() -> Result<(), anyhow::Error> {
 
     let mut transaction_2 = repository.begin_transaction().await?;
 
-    let mut old_account_version: Context<Account> =
-        Context::load(&mut transaction_2, &account_id).await?;
+    let mut old_account_version: Context<Account> = transaction_2.get(&account_id).await?;
 
-    let mut account: Context<Account> = Context::load(&mut transaction, &account_id).await?;
+    let mut account: Context<Account> = transaction.get(&account_id).await?;
 
     // Balance hasn't changed since the event wasn't actually applied
     assert_eq!(account.state().balance, 345);
@@ -116,7 +120,7 @@ async fn main() -> Result<(), anyhow::Error> {
     };
 
     account.record_that(add_event)?;
-    account.save(&mut transaction).await?;
+    transaction.store(&mut account).await?;
     transaction.commit().await?;
 
     // Attempt to apply another event to our aggregate, but with an out of date version number
@@ -130,8 +134,8 @@ async fn main() -> Result<(), anyhow::Error> {
 
     old_account_version.record_that(add_event)?;
 
-    let err = old_account_version
-        .save(&mut transaction_2)
+    let err = transaction_2
+        .store(&mut old_account_version)
         .await
         .expect_err("Failed to get optimistic concurrency error");
 
@@ -325,7 +329,11 @@ async fn get_repository() -> PostgresRepository<TableOutbox> {
 
     let pool_options = PoolOptions::default();
 
-    PostgresRepository::new(connection_options, pool_options, TableOutbox)
+    let tables = eventastic_postgres::TableRegistryBuilder::new()
+        .register_with_tables::<Account>("events", "snapshots")
+        .build();
+
+    PostgresRepository::new(connection_options, pool_options, TableOutbox, tables)
         .await
         .unwrap()
 }

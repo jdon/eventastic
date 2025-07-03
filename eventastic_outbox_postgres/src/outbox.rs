@@ -28,7 +28,7 @@ impl SideEffectStorage for TableOutbox {
         let mut created_ats: Vec<DateTime<Utc>> = Vec::with_capacity(items.len());
 
         for side_effect in items {
-            let id = side_effect.id().clone();
+            let id = *side_effect.id();
             let msg = serde_json::to_value(side_effect).map_err(DbError::SerializationError)?;
             ids.push(id);
             messages.push(msg);
@@ -74,7 +74,7 @@ where
 }
 
 #[async_trait]
-impl<'a, T> TransactionOutboxExt<T> for PostgresTransaction<'a, TableOutbox>
+impl<T> TransactionOutboxExt<T> for PostgresTransaction<'_, TableOutbox>
 where
     T: SideEffect + DeserializeOwned + Send + 'static,
     T::SideEffectId: Clone + Send + 'static,

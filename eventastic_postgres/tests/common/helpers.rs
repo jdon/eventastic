@@ -2,7 +2,7 @@ use super::test_aggregate::{Account, AccountEvent};
 use chrono::{DateTime, Utc};
 use eventastic::aggregate::{Context, Root};
 use eventastic_outbox_postgres::TableOutbox;
-use eventastic_postgres::PostgresRepository;
+use eventastic_postgres::{PostgresRepository, TableRegistryBuilder};
 use sqlx::Row;
 use sqlx::{pool::PoolOptions, postgres::PgConnectOptions};
 use std::str::FromStr;
@@ -16,7 +16,11 @@ pub async fn get_repository() -> PostgresRepository<TableOutbox> {
 
     let pool_options = PoolOptions::default();
 
-    let repo = PostgresRepository::new(connection_options, pool_options, TableOutbox)
+    let tables = TableRegistryBuilder::new()
+        .register_with_tables::<Account>("events", "snapshots")
+        .build();
+
+    let repo = PostgresRepository::new(connection_options, pool_options, TableOutbox, tables)
         .await
         .expect("Failed to connect to postgres");
     repo.run_migrations()
@@ -116,7 +120,8 @@ pub async fn load_account(account_id: Uuid) -> Context<Account> {
         .await
         .expect("Failed to begin transaction");
 
-    let context: Context<Account> = Context::load(&mut transaction, &account_id)
+    let context: Context<Account> = transaction
+        .get(&account_id)
         .await
         .expect("Failed to load account");
 
@@ -228,8 +233,8 @@ impl AccountBuilder {
             .await
             .expect("Failed to begin transaction");
 
-        account
-            .save(&mut transaction)
+        transaction
+            .store(&mut account)
             .await
             .expect("Failed to save account");
 

@@ -3,7 +3,7 @@ use futures::Stream;
 use std::fmt::Debug;
 
 use crate::{
-    aggregate::Aggregate,
+    aggregate::{Aggregate, Context},
     event::{DomainEvent, EventStoreEvent},
 };
 
@@ -39,10 +39,11 @@ where
     pub snapshot_version: u64,
 }
 
-/// A RepositoryTransaction is an object that allows to load and save
-/// an [`Aggregate`] from and to a persistent data store
+/// A RepositoryReader provides read-only access to aggregate data.
+/// This trait can be implemented by both transactional and non-transactional
+/// repository implementations to enable efficient read operations.
 #[async_trait]
-pub trait RepositoryTransaction<T: Aggregate> {
+pub trait RepositoryReader<T: Aggregate> {
     /// The error type returned by the Store during repository operations.
     type DbError;
 
@@ -71,7 +72,12 @@ pub trait RepositoryTransaction<T: Aggregate> {
         &mut self,
         id: &T::AggregateId,
     ) -> Result<Option<Snapshot<T>>, Self::DbError>;
+}
 
+/// A RepositoryTransaction is an object that allows to load and save
+/// an [`Aggregate`] from and to a persistent data store
+#[async_trait]
+pub trait RepositoryTransaction<T: Aggregate>: RepositoryReader<T> {
     /// Appends new Domain Events to the specified Event Stream.
     ///
     /// Returns a list of the Domain Event Ids that were successfully stored.
@@ -92,4 +98,29 @@ pub trait RepositoryTransaction<T: Aggregate> {
         &mut self,
         side_effects: Vec<T::SideEffect>,
     ) -> Result<(), Self::DbError>;
+}
+
+/// A Repository provides high-level operations for loading
+/// [`Aggregate`] instances without requiring explicit transaction management.
+///
+/// This trait is intended for simpler use cases where automatic transaction
+/// handling is preferred over manual transaction control.
+#[async_trait]
+pub trait Repository<T: Aggregate> {
+    /// The error type returned by the Repository during operations.
+    type Error;
+
+    /// Loads an aggregate from the repository by its ID.
+    ///
+    /// This method automatically handles transaction management and will
+    /// load the latest state of the aggregate by replaying its event stream.
+    /// If a snapshot is available, it will be used to optimize the loading process.
+    ///
+    /// # Errors
+    ///
+    /// Returns repository-specific errors which may include:
+    /// - Aggregate not found errors
+    /// - Database connection errors  
+    /// - Event application errors
+    async fn load(&self, aggregate_id: &T::AggregateId) -> Result<Context<T>, Self::Error>;
 }
