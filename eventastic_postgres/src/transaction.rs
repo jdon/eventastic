@@ -192,18 +192,17 @@ where
             .insert_events_query::<T>()
             .ok_or(DbError::UnregisteredAggregate)?;
 
-        let inserted_ids: Result<Vec<Uuid>, sqlx::Error> =
-            sqlx::query(insert_query)
-                .bind(&event_ids_to_insert[..])
-                .bind(&versions_to_insert[..])
-                .bind(&aggregate_ids_to_insert[..])
-                .bind(&events_to_insert[..])
-                .bind(&created_ats_to_insert[..])
-                .fetch_all(&mut *self.inner)
-                .await?
-                .into_iter()
-                .map(|row| row.try_get(0))
-                .collect();
+        let inserted_ids: Result<Vec<Uuid>, sqlx::Error> = sqlx::query(insert_query)
+            .bind(&event_ids_to_insert[..])
+            .bind(&versions_to_insert[..])
+            .bind(&aggregate_ids_to_insert[..])
+            .bind(&events_to_insert[..])
+            .bind(&created_ats_to_insert[..])
+            .fetch_all(&mut *self.inner)
+            .await?
+            .into_iter()
+            .map(|row| row.try_get(0))
+            .collect();
 
         Ok(inserted_ids?)
     }
