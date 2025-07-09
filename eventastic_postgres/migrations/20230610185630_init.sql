@@ -10,11 +10,12 @@ CREATE TABLE if not exists events (
 CREATE UNIQUE INDEX IF NOT EXISTS events_event_id ON events (event_id);
 
 CREATE TABLE if not exists snapshots (
-  aggregate_id uuid PRIMARY KEY,
+  aggregate_id uuid NOT NULL,
   aggregate jsonb NOT NULL,
   version bigint NOT NULL CHECK (version >= 0),
   snapshot_version bigint NOT NULL,
-  created_at timestamptz NOT NULL
+  created_at timestamptz NOT NULL,
+  PRIMARY KEY (aggregate_id, snapshot_version)
 );
 
 CREATE TABLE if not exists outbox (
@@ -25,4 +26,3 @@ CREATE TABLE if not exists outbox (
   created_at timestamptz NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS snapshots_lookup ON snapshots(aggregate_id, snapshot_version);

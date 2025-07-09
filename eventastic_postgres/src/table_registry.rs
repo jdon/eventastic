@@ -44,7 +44,7 @@ impl TableConfig {
             upsert_snapshot_query: format!(
                 "INSERT INTO {} (aggregate_id, aggregate, version, snapshot_version, created_at) \
                  VALUES ($1, $2, $3, $4, $5) \
-                 ON CONFLICT (aggregate_id) DO UPDATE SET aggregate = $2, version = $3, snapshot_version = $4, created_at = $5",
+                 ON CONFLICT (aggregate_id, snapshot_version) DO UPDATE SET aggregate = $2, version = $3, created_at = $5",
                 &snapshots
             ),
         }

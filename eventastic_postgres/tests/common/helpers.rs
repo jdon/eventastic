@@ -65,6 +65,88 @@ pub async fn get_account_snapshot(account_id: Uuid) -> Option<SavedSnapshot> {
     })
 }
 
+pub async fn get_account_snapshot_with_version(
+    account_id: Uuid,
+    snapshot_version: i64,
+) -> Option<SavedSnapshot> {
+    let repository = get_repository().await;
+
+    let transaction = repository
+        .begin_transaction()
+        .await
+        .expect("Failed to begin transaction");
+
+    let row = sqlx::query(
+        "SELECT aggregate, version, snapshot_version FROM snapshots WHERE aggregate_id = $1 AND snapshot_version = $2",
+    )
+    .bind(account_id)
+    .bind(snapshot_version)
+    .fetch_optional(&mut *transaction.into_inner())
+    .await
+    .expect("Failed to fetch snapshot");
+
+    row.map(|row| {
+        let aggregate: Result<serde_json::Value, _> = row.try_get("aggregate");
+        let version: Result<i64, _> = row.try_get("version");
+        let snapshot_version: Result<i64, _> = row.try_get("snapshot_version");
+
+        SavedSnapshot {
+            aggregate: serde_json::from_value(aggregate.unwrap()).unwrap(),
+            version: version.unwrap(),
+            snapshot_version: snapshot_version.unwrap(),
+        }
+    })
+}
+
+pub async fn get_all_account_snapshots(account_id: Uuid) -> Vec<SavedSnapshot> {
+    let repository = get_repository().await;
+
+    let transaction = repository
+        .begin_transaction()
+        .await
+        .expect("Failed to begin transaction");
+
+    let rows = sqlx::query(
+        "SELECT aggregate, version, snapshot_version FROM snapshots WHERE aggregate_id = $1 ORDER BY snapshot_version ASC",
+    )
+    .bind(account_id)
+    .fetch_all(&mut *transaction.into_inner())
+    .await
+    .expect("Failed to fetch snapshots");
+
+    rows.into_iter()
+        .map(|row| {
+            let aggregate: Result<serde_json::Value, _> = row.try_get("aggregate");
+            let version: Result<i64, _> = row.try_get("version");
+            let snapshot_version: Result<i64, _> = row.try_get("snapshot_version");
+
+            SavedSnapshot {
+                aggregate: serde_json::from_value(aggregate.unwrap()).unwrap(),
+                version: version.unwrap(),
+                snapshot_version: snapshot_version.unwrap(),
+            }
+        })
+        .collect()
+}
+
+pub async fn count_account_snapshots(account_id: Uuid) -> usize {
+    let repository = get_repository().await;
+
+    let transaction = repository
+        .begin_transaction()
+        .await
+        .expect("Failed to begin transaction");
+
+    let row = sqlx::query("SELECT COUNT(*) as count FROM snapshots WHERE aggregate_id = $1")
+        .bind(account_id)
+        .fetch_one(&mut *transaction.into_inner())
+        .await
+        .expect("Failed to count snapshots");
+
+    let count: i64 = row.try_get("count").expect("Failed to get count");
+    count as usize
+}
+
 pub async fn replace_account_snapshot(account_id: Uuid, snapshot: SavedSnapshot) {
     let repository = get_repository().await;
 
@@ -105,6 +187,30 @@ pub async fn delete_snapshot(account_id: Uuid) {
         .execute(&mut *transaction)
         .await
         .expect("Failed to delete snapshot");
+
+    transaction
+        .commit()
+        .await
+        .expect("Failed to commit transaction");
+}
+
+pub async fn insert_snapshot_with_version(account_id: Uuid, snapshot: SavedSnapshot, version: i64) {
+    let repository = get_repository().await;
+
+    let mut transaction = repository
+        .begin_transaction()
+        .await
+        .expect("Failed to begin transaction")
+        .into_inner();
+
+    sqlx::query("INSERT INTO snapshots (aggregate_id, aggregate, version, snapshot_version, created_at) VALUES ($1, $2, $3, $4, NOW())")
+        .bind(account_id)
+        .bind(serde_json::to_value(&snapshot.aggregate).expect("Failed to serialize snapshot"))
+        .bind(snapshot.version)
+        .bind(version)
+        .execute(&mut *transaction)
+        .await
+        .expect("Failed to insert snapshot");
 
     transaction
         .commit()
