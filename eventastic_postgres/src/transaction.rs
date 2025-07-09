@@ -9,7 +9,7 @@ use eventastic::aggregate::{Aggregate, Context};
 use eventastic::event::DomainEvent;
 use eventastic::event::EventStoreEvent;
 use eventastic::repository::Snapshot;
-use eventastic::repository::{RepositoryError, RepositoryReader, RepositoryTransaction};
+use eventastic::repository::{RepositoryError, RepositoryReader, RepositoryWriter};
 use futures::StreamExt;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -17,7 +17,7 @@ use sqlx::Row;
 use sqlx::types::Uuid;
 use sqlx::{Postgres, Transaction};
 
-/// PostgreSQL transaction wrapper that implements the [`RepositoryTransaction`] trait.
+/// PostgreSQL transaction wrapper that implements the [`RepositoryWriter`] and [`RepositoryReader`] traits.
 ///
 /// This struct provides transactional access to PostgreSQL storage for event sourcing
 /// operations. It manages database transactions and integrates with side effect storage.
@@ -69,6 +69,7 @@ where
         T: Aggregate<AggregateId = Uuid> + 'static + Send + Sync + Serialize + DeserializeOwned,
         T::DomainEvent: DomainEvent<EventId = Uuid> + Serialize + DeserializeOwned + Send + Sync,
         T::SideEffect: SideEffect<SideEffectId = Uuid> + Serialize + Send + Sync,
+        T::ApplyError: Send + Sync,
     {
         Context::load(self, id).await
     }
@@ -82,6 +83,7 @@ where
         T: Aggregate<AggregateId = Uuid> + 'static + Send + Sync + Serialize + DeserializeOwned,
         T::DomainEvent: DomainEvent<EventId = Uuid> + Serialize + DeserializeOwned + Send + Sync,
         T::SideEffect: SideEffect<SideEffectId = Uuid> + Serialize + Send + Sync,
+        T::ApplyError: Send + Sync,
     {
         aggregate.save(self).await
     }
@@ -93,6 +95,7 @@ where
     T: Aggregate<AggregateId = Uuid> + 'static + DeserializeOwned + Serialize + Send + Sync,
     T::SideEffect: SideEffect<SideEffectId = Uuid> + Serialize + Send + Sync,
     T::DomainEvent: DomainEvent<EventId = Uuid> + Serialize + DeserializeOwned + Send + Sync,
+    T::ApplyError: Send + Sync,
     O: SideEffectStorage,
 {
     type DbError = DbError;
@@ -151,11 +154,12 @@ where
 }
 
 #[async_trait]
-impl<O, T> RepositoryTransaction<T> for PostgresTransaction<'_, O>
+impl<O, T> RepositoryWriter<T> for PostgresTransaction<'_, O>
 where
     T: Aggregate<AggregateId = Uuid> + 'static + DeserializeOwned + Serialize + Send + Sync,
     T::SideEffect: SideEffect<SideEffectId = Uuid> + Serialize + Send + Sync,
     T::DomainEvent: DomainEvent<EventId = Uuid> + Serialize + DeserializeOwned + Send + Sync,
+    T::ApplyError: Send + Sync,
     O: SideEffectStorage,
 {
     /// Stores new domain events to the database

@@ -85,6 +85,7 @@ where
     T: Aggregate<AggregateId = Uuid> + DeserializeOwned + Serialize + Send + Sync + 'static,
     T::DomainEvent: DomainEvent<EventId = Uuid> + Serialize + DeserializeOwned + Send + Sync,
     T::SideEffect: SideEffect<SideEffectId = Uuid> + Serialize + Send + Sync,
+    T::ApplyError: Send + Sync,
     O: SideEffectStorage + Clone + Send + Sync,
 {
     type DbError = DbError;
@@ -148,6 +149,7 @@ where
     T: Aggregate<AggregateId = Uuid> + DeserializeOwned + Serialize + Send + Sync + 'static,
     T::DomainEvent: DomainEvent<EventId = Uuid> + Serialize + DeserializeOwned + Send + Sync,
     T::SideEffect: eventastic::aggregate::SideEffect<SideEffectId = Uuid> + Serialize + Send + Sync,
+    T::ApplyError: Send + Sync,
     O: SideEffectStorage + Clone + Send + Sync,
 {
     type Error = RepositoryError<

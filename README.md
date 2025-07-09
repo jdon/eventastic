@@ -1,103 +1,182 @@
 # Eventastic
 
-A type-safe event sourcing and CQRS library for Rust with PostgreSQL persistence. 
+A type-safe event sourcing and CQRS library for Rust with PostgreSQL persistence.
 
-Eventastic provides strong consistency guarantees through mandatory transactions, built-in idempotency checking, and reliable side effect processing via the transactional outbox pattern. Designed for building event-driven systems that require data integrity and audit trails.
+## Features
 
-## Examples
-See full examples in [examples/bank](https://github.com/jdon/eventastic/blob/main/examples/bank/src/main.rs)
+- **Strongly-typed aggregates and events** - Define your domain model with Rust structs and enums
+- **Mandatory transactions** for ACID guarantees
+- **Built-in idempotency** prevents duplicate event processing
+- **Optimistic concurrency control** detects conflicting modifications
+- **Transactional outbox pattern** for reliable side effects
+- **Snapshot optimization** for fast aggregate loading
+- **In-memory repository** for testing and development
+
+## Quick Start
+
+Define your domain aggregate and events:
 
 ```rust
-#[tokio::main]
-async fn main() -> Result<(), anyhow::Error> {
-    // Setup postgres repo
-    let repository = get_repository().await;
+use eventastic::prelude::*;
 
-    // Migrate the db
-    repository.run_migrations().await?;
+#[derive(Clone, Debug)]
+struct BankAccount {
+    id: String,
+    balance: i64,
+}
 
-    // Run our side effects handler in a background task
-    tokio::spawn({
-        let repo = repository.clone();
-        async move {
-            let _ = repo
-                .start_outbox(SideEffectContext {}, std::time::Duration::from_secs(5))
-                .await;
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum AccountEvent {
+    Opened { event_id: String, account_id: String, initial_balance: i64 },
+    Deposited { event_id: String, amount: i64 },
+    Withdrawn { event_id: String, amount: i64 },
+}
+
+impl DomainEvent for AccountEvent {
+    type EventId = String;
+    fn id(&self) -> &Self::EventId {
+        match self {
+            AccountEvent::Opened { event_id, .. } => event_id,
+            AccountEvent::Deposited { event_id, .. } => event_id,
+            AccountEvent::Withdrawn { event_id, .. } => event_id,
         }
-    });
+    }
+}
 
-    // Start transaction
+impl Aggregate for BankAccount {
+    const SNAPSHOT_VERSION: u64 = 1;
+    type AggregateId = String;
+    type DomainEvent = AccountEvent;
+    type ApplyError = String;
+    type SideEffect = (); // No side effects for this example
+
+    fn aggregate_id(&self) -> &Self::AggregateId {
+        &self.id
+    }
+
+    fn apply_new(event: &Self::DomainEvent) -> Result<Self, Self::ApplyError> {
+        match event {
+            AccountEvent::Opened { account_id, initial_balance, .. } => {
+                Ok(BankAccount {
+                    id: account_id.clone(),
+                    balance: *initial_balance,
+                })
+            }
+            _ => Err("Account must be opened first".to_string()),
+        }
+    }
+
+    fn apply(&mut self, event: &Self::DomainEvent) -> Result<(), Self::ApplyError> {
+        match event {
+            AccountEvent::Opened { .. } => Err("Account already exists".to_string()),
+            AccountEvent::Deposited { amount, .. } => {
+                self.balance += amount;
+                Ok(())
+            }
+            AccountEvent::Withdrawn { amount, .. } => {
+                if self.balance >= *amount {
+                    self.balance -= amount;
+                    Ok(())
+                } else {
+                    Err("Insufficient funds".to_string())
+                }
+            }
+        }
+    }
+
+    fn side_effects(&self, _event: &Self::DomainEvent) -> Option<Vec<Self::SideEffect>> {
+        None
+    }
+}
+```
+
+Use the aggregate with transactions:
+
+```rust
+use eventastic::memory::InMemoryRepository;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let repository = InMemoryRepository::<BankAccount>::new();
+
+    // Create new account
+    let mut account = BankAccount::record_new(AccountEvent::Opened {
+        event_id: "evt-1".to_string(),
+        account_id: "acc-123".to_string(),
+        initial_balance: 1000,
+    })?;
+
+    // Deposit money
+    account.record_that(AccountEvent::Deposited {
+        event_id: "evt-2".to_string(),
+        amount: 500,
+    })?;
+
+    // Save with transaction
     let mut transaction = repository.begin_transaction().await?;
-
-    let account_id = Uuid::new_v4();
-
-    let event_id = Uuid::new_v4();
-
-    let add_event_id = Uuid::new_v4();
-
-    // Open a bank account
-    let event = AccountEvent::Open {
-        event_id,
-        account_id,
-        starting_balance: 21,
-        email: "user@example.com".into(),
-    };
-
-    let mut account = Account::record_new(event)?;
-
-    // Add funds to newly created account
-    let add_event = AccountEvent::Add {
-        event_id: add_event_id,
-        amount: 324,
-    };
-
-    // Record add fund events (events are applied in-memory)
-    account.record_that(add_event.clone())?;
-
-    // Save uncommitted events and side effects in the db.
     transaction.store(&mut account).await?;
+    transaction.commit()?;
 
-    // Commit the transaction
-    transaction.commit().await?;
+    // Load account
+    let loaded_account = repository.load(&"acc-123".to_string()).await?;
+    assert_eq!(loaded_account.state().balance, 1500);
 
-    // Get the aggregate from the db using a transaction (read-write access)
-    let mut transaction = repository.begin_transaction().await?;
-
-    let mut account = Account::load_with_transaction(&mut transaction, account_id).await?;
-
-    // Check our balance is correct
-    assert_eq!(account.state().balance, 345);
-
-    // Demonstrate loading without a transaction (read-only access, more efficient)
-    let account_readonly: Context<Account> = repository.load(&account_id).await?;
-    assert_eq!(account_readonly.state().balance, 345);
-    println!("Successfully loaded account with non-transactional method");
-
-    // Trying to apply the same event id but with different content gives us an IdempotencyError
-    let changed_add_event = AccountEvent::Add {
-        event_id: add_event_id,
-        amount: 123,
-    };
-
-    account.record_that(changed_add_event)?;
-
-    // Idempotency errors occur when storing, not when recording events
-    let err = transaction
-        .store(&mut account)
-        .await
-        .expect_err("Failed to get idempotency error");
-
-    assert!(matches!(err, SaveError::IdempotencyError(_, _)));
-
-    transaction.commit().await?;
-
-    let mut transaction = repository.begin_transaction().await?;
-
-    let account: Context<Account> = transaction.get(&account_id).await?;
-
-    // Balance hasn't changed since the event wasn't actually applied
-    assert_eq!(account.state().balance, 345);
-
-    println!("Got account {account:?}");
     Ok(())
 }
+```
+
+## Architecture
+
+Eventastic is built around four core concepts:
+
+- **Aggregates** - Domain entities that apply events to update their state
+- **Events** - Immutable records of what happened in your domain
+- **Context** - Wrapper that tracks aggregate state and uncommitted events
+- **Repository** - Persistence layer with transactional guarantees
+
+## Why Eventastic?
+
+### Transaction-First Design
+
+Unlike many event sourcing libraries, Eventastic requires transactions for all write operations. This provides:
+
+- **ACID compliance** - All changes are atomic and consistent
+- **Idempotency** - Duplicate events are detected and handled gracefully
+- **Concurrency safety** - Optimistic locking prevents data races
+- **Side effect reliability** - External operations are processed via outbox pattern
+
+### Rust Benefits
+
+Using Rust provides compile-time guarantees:
+
+- Events must implement required traits (DomainEvent, Clone, etc.)
+- Aggregates must handle all event types in match statements
+- Error handling is explicit with Result types
+- No null pointer exceptions or runtime type errors
+
+### Production Ready
+
+Eventastic includes features needed for production systems:
+
+- Automatic snapshot creation and loading
+- Comprehensive error types with structured information
+- Transaction-based consistency guarantees
+
+## Persistence
+
+The library provides two repository implementations:
+
+- `eventastic::memory::InMemoryRepository` - For testing and development
+- `eventastic_postgres::PostgresRepository` - For production PostgreSQL storage
+
+The PostgreSQL implementation includes:
+
+- Event and snapshot storage
+- Transaction support
+- Outbox pattern for side effects
+
+## Examples
+
+See the `examples/` directory for complete implementations:
+
+- **Bank** - Full banking domain with accounts and transfers

@@ -1,37 +1,3 @@
-//! # Eventastic PostgreSQL Implementation
-//!
-//! This crate provides a PostgreSQL-based implementation of the eventastic
-//! event sourcing framework. It includes:
-//!
-//! - [`PostgresRepository`] - PostgreSQL repository implementation
-//! - [`PostgresTransaction`] - Transaction management for PostgreSQL
-//! - Error handling specific to PostgreSQL operations
-//! - Extensions for loading aggregates from PostgreSQL storage
-//!
-//! ## Features
-//!
-//! - Event streaming from PostgreSQL
-//! - Snapshot storage and retrieval
-//! - Optimistic concurrency control
-//! - Side effect storage integration
-//!
-//! ## Example
-//!
-//! ```rust,ignore
-//! use eventastic_postgres::{PostgresRepository, PostgresTransaction};
-//! use sqlx::postgres::PgConnectOptions;
-//!
-//! let connect_options = PgConnectOptions::new()
-//!     .host("localhost")
-//!     .database("eventstore");
-//!     
-//! let repository = PostgresRepository::new(
-//!     connect_options,
-//!     sqlx::pool::PoolOptions::new(),
-//!     outbox_storage,
-//! ).await?;
-//! ```
-
 mod common;
 mod reader_impl;
 mod repository;
@@ -100,6 +66,7 @@ where
     <T as Aggregate>::DomainEvent:
         DomainEvent<EventId = Uuid> + Serialize + DeserializeOwned + Send + Sync,
     <T as Aggregate>::SideEffect: SideEffect<SideEffectId = Uuid> + Serialize + Send + Sync,
+    <T as Aggregate>::ApplyError: Send + Sync,
     O: SideEffectStorage + Send + Sync,
 {
     /// Loads an aggregate from PostgreSQL storage by its UUID using an existing transaction.
@@ -148,6 +115,7 @@ where
     <T as Aggregate>::DomainEvent:
         DomainEvent<EventId = Uuid> + Serialize + DeserializeOwned + Send + Sync,
     <T as Aggregate>::SideEffect: SideEffect<SideEffectId = Uuid> + Serialize + Send + Sync,
+    <T as Aggregate>::ApplyError: Send + Sync,
     O: SideEffectStorage + Send + Sync,
 {
 }

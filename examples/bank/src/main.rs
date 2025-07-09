@@ -146,6 +146,67 @@ async fn main() -> Result<(), anyhow::Error> {
 
     transaction_2.commit().await?;
 
+    // Demonstrate side effect regeneration
+
+    // Regenerate side effects for the account open event
+    let regenerated_side_effects = Context::<Account>::regenerate_side_effects(
+        &mut repository.clone(),
+        &account_id,
+        &event_id, // This is the Open event ID from the beginning
+    )
+    .await?;
+
+    println!("Original event ID: {event_id}");
+
+    if let Some(side_effects) = regenerated_side_effects {
+        println!(
+            "Successfully regenerated {} side effect(s)",
+            side_effects.len()
+        );
+
+        for effect in side_effects {
+            match &effect {
+                SideEffects::SendEmail {
+                    id,
+                    address,
+                    content,
+                } => {
+                    // Verify this matches what we expect
+                    assert_eq!(id, &event_id);
+                    assert_eq!(address, "user@example.com");
+                    assert!(content.contains(&account_id.to_string()));
+                    assert!(content.contains("21")); // starting balance
+                }
+                SideEffects::PublishMessage { .. } => {
+                    println!("  - PublishMessage (unexpected for Open event)");
+                }
+            }
+        }
+    } else {
+        println!("No side effects were regenerated (this shouldn't happen for Open event)");
+    }
+
+    // Also demonstrate regenerating for an event that doesn't produce side effects
+    println!("\nRegenerating side effects for Add event:");
+    let no_side_effects = Context::<Account>::regenerate_side_effects(
+        &mut repository.clone(),
+        &account_id,
+        &add_event_id,
+    )
+    .await?;
+
+    match no_side_effects {
+        Some(effects) => {
+            println!(
+                "Unexpected: {} side effects generated for Add event",
+                effects.len()
+            );
+        }
+        None => {
+            println!("No side effects generated for Add event (as expected)");
+        }
+    }
+
     tokio::time::sleep(std::time::Duration::from_secs(30)).await;
     Ok(())
 }
@@ -323,6 +384,8 @@ impl Aggregate for Account {
     }
 }
 
+// Using the default outbox implementation
+// You can also implement your own outbox handler by implementing the `SideEffectStorage` trait
 async fn get_repository() -> PostgresRepository<TableOutbox> {
     let connection_options =
         PgConnectOptions::from_str("postgres://postgres:password@localhost/postgres").unwrap();
