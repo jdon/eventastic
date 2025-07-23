@@ -4,11 +4,12 @@
 //! duplication and ensure consistency.
 
 use crate::DbError;
+use crate::pickle::Pickle;
+use anyhow::Context;
 use eventastic::aggregate::Aggregate;
 use eventastic::event::{DomainEvent, EventStoreEvent};
 use eventastic::repository::Snapshot;
-use serde::de::DeserializeOwned;
-use sqlx::types::{JsonValue, Uuid};
+use sqlx::types::Uuid;
 
 /// Internal representation of a database row containing event data.
 ///
@@ -18,7 +19,7 @@ use sqlx::types::{JsonValue, Uuid};
 pub(crate) struct PartialEventRow {
     pub event_id: Uuid,
     pub version: i64,
-    pub event: JsonValue,
+    pub event: Vec<u8>,
 }
 
 impl PartialEventRow {
@@ -35,20 +36,21 @@ impl PartialEventRow {
     /// # Errors
     ///
     /// Returns [`DbError::InvalidVersionNumber`] if the version cannot be converted to u64.
-    /// Returns [`DbError::SerializationError`] if the event JSON cannot be deserialized.
+    /// Returns [`DbError::PicklingError`] if the event JSON cannot be deserialized.
     pub fn to_event<Evt>(row: PartialEventRow) -> Result<EventStoreEvent<Evt>, DbError>
     where
-        Evt: DomainEvent<EventId = Uuid> + DeserializeOwned,
+        Evt: DomainEvent<EventId = Uuid> + Pickle,
     {
         let row_version = u64::try_from(row.version).map_err(|_| DbError::InvalidVersionNumber)?;
 
-        serde_json::from_value::<Evt>(row.event)
+        Evt::unpickle(&row.event)
             .map(|e| EventStoreEvent {
                 id: row.event_id,
                 event: e,
                 version: row_version,
             })
-            .map_err(DbError::SerializationError)
+            .context("Failed to unpickle event")
+            .map_err(DbError::PicklingError)
     }
 }
 
@@ -58,7 +60,7 @@ impl PartialEventRow {
 /// before converting them to the full [`Snapshot`] type.
 #[derive(sqlx::FromRow)]
 pub(crate) struct PartialSnapshotRow {
-    pub aggregate: serde_json::Value,
+    pub aggregate: Vec<u8>,
     pub snapshot_version: i64,
     pub version: i64,
 }
@@ -78,16 +80,17 @@ impl PartialSnapshotRow {
     ///
     /// Returns [`DbError::InvalidVersionNumber`] if the version cannot be converted to u64.
     /// Returns [`DbError::InvalidSnapshotVersion`] if the snapshot version cannot be converted to u64.
-    /// Returns [`DbError::SerializationError`] if the aggregate JSON cannot be deserialized.
+    /// Returns [`DbError::PicklingError`] if the aggregate JSON cannot be deserialized.
     pub fn to_snapshot<T>(row: PartialSnapshotRow) -> Result<Snapshot<T>, DbError>
     where
-        T: Aggregate + DeserializeOwned,
+        T: Aggregate + Pickle,
     {
         let version = u64::try_from(row.version).map_err(|_| DbError::InvalidVersionNumber)?;
         let snapshot_version =
             u64::try_from(row.snapshot_version).map_err(|_| DbError::InvalidSnapshotVersion)?;
-        let aggregate: T =
-            serde_json::from_value(row.aggregate).map_err(DbError::SerializationError)?;
+        let aggregate: T = T::unpickle(&row.aggregate)
+            .context("Failed to unpickle aggregate")
+            .map_err(DbError::PicklingError)?;
 
         Ok(Snapshot {
             aggregate,

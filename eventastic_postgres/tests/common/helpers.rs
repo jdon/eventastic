@@ -2,7 +2,7 @@ use super::test_aggregate::{Account, AccountEvent};
 use chrono::{DateTime, Utc};
 use eventastic::aggregate::{Context, Root};
 use eventastic_outbox_postgres::TableOutbox;
-use eventastic_postgres::{PostgresRepository, TableRegistryBuilder};
+use eventastic_postgres::{Pickle, PostgresRepository, TableRegistryBuilder};
 use sqlx::Row;
 use sqlx::{pool::PoolOptions, postgres::PgConnectOptions};
 use std::str::FromStr;
@@ -53,12 +53,12 @@ pub async fn get_account_snapshot(account_id: Uuid) -> Option<SavedSnapshot> {
     .expect("Failed to fetch snapshot");
 
     row.map(|row| {
-        let aggregate: Result<serde_json::Value, _> = row.try_get("aggregate");
+        let aggregate_bytes: Result<Vec<u8>, _> = row.try_get("aggregate");
         let version: Result<i64, _> = row.try_get("version");
         let snapshot_version: Result<i64, _> = row.try_get("snapshot_version");
 
         SavedSnapshot {
-            aggregate: serde_json::from_value(aggregate.unwrap()).unwrap(),
+            aggregate: Account::unpickle(&aggregate_bytes.unwrap()).unwrap(),
             version: version.unwrap(),
             snapshot_version: snapshot_version.unwrap(),
         }
@@ -86,12 +86,12 @@ pub async fn get_account_snapshot_with_version(
     .expect("Failed to fetch snapshot");
 
     row.map(|row| {
-        let aggregate: Result<serde_json::Value, _> = row.try_get("aggregate");
+        let aggregate_bytes: Result<Vec<u8>, _> = row.try_get("aggregate");
         let version: Result<i64, _> = row.try_get("version");
         let snapshot_version: Result<i64, _> = row.try_get("snapshot_version");
 
         SavedSnapshot {
-            aggregate: serde_json::from_value(aggregate.unwrap()).unwrap(),
+            aggregate: Account::unpickle(&aggregate_bytes.unwrap()).unwrap(),
             version: version.unwrap(),
             snapshot_version: snapshot_version.unwrap(),
         }
@@ -116,12 +116,12 @@ pub async fn get_all_account_snapshots(account_id: Uuid) -> Vec<SavedSnapshot> {
 
     rows.into_iter()
         .map(|row| {
-            let aggregate: Result<serde_json::Value, _> = row.try_get("aggregate");
+            let aggregate_bytes: Result<Vec<u8>, _> = row.try_get("aggregate");
             let version: Result<i64, _> = row.try_get("version");
             let snapshot_version: Result<i64, _> = row.try_get("snapshot_version");
 
             SavedSnapshot {
-                aggregate: serde_json::from_value(aggregate.unwrap()).unwrap(),
+                aggregate: Account::unpickle(&aggregate_bytes.unwrap()).unwrap(),
                 version: version.unwrap(),
                 snapshot_version: snapshot_version.unwrap(),
             }
@@ -158,7 +158,7 @@ pub async fn replace_account_snapshot(account_id: Uuid, snapshot: SavedSnapshot)
     let mut pg_transaction = transaction.into_inner();
 
     let row = sqlx::query("UPDATE snapshots set aggregate = $1, snapshot_version = $2, version = $3 where aggregate_id = $4")
-        .bind(serde_json::to_value(&snapshot.aggregate).expect("Failed to serialize snapshot"))
+        .bind(snapshot.aggregate.pickle().expect("Failed to serialize snapshot"))
         .bind(snapshot.snapshot_version)
         .bind(snapshot.version)
         .bind(account_id)
@@ -205,7 +205,7 @@ pub async fn insert_snapshot_with_version(account_id: Uuid, snapshot: SavedSnaps
 
     sqlx::query("INSERT INTO snapshots (aggregate_id, aggregate, version, snapshot_version, created_at) VALUES ($1, $2, $3, $4, NOW())")
         .bind(account_id)
-        .bind(serde_json::to_value(&snapshot.aggregate).expect("Failed to serialize snapshot"))
+        .bind(snapshot.aggregate.pickle().expect("Failed to serialize snapshot"))
         .bind(snapshot.version)
         .bind(version)
         .execute(&mut *transaction)
@@ -369,7 +369,7 @@ pub async fn get_side_effect(
         .expect("Failed to query outbox table");
 
     if let Some(row) = row {
-        let message_json: serde_json::Value = row
+        let message_bytes: Vec<u8> = row
             .try_get("message")
             .expect("Failed to get message from row");
         let retries: i32 = row
@@ -380,7 +380,8 @@ pub async fn get_side_effect(
             .expect("Failed to get requeue from row");
 
         let side_effect: super::test_aggregate::SideEffects =
-            serde_json::from_value(message_json).expect("Failed to deserialize side effect");
+            super::test_aggregate::SideEffects::unpickle(&message_bytes)
+                .expect("Failed to deserialize side effect");
 
         Some((side_effect, retries, requeue))
     } else {
