@@ -9,7 +9,7 @@ use std::sync::Arc;
 /// during query execution.
 #[derive(Debug, Clone)]
 pub struct TableConfig {
-    pub(crate) stream_events_query: String,
+    pub(crate) stream_events_query: Arc<str>,
     pub(crate) get_event_query: String,
     pub(crate) get_snapshot_query: String,
     pub(crate) insert_events_query: String,
@@ -26,7 +26,7 @@ impl TableConfig {
             stream_events_query: format!(
                 "SELECT event, event_id, version FROM {} WHERE aggregate_id = $1 AND version >= $2 ORDER BY version ASC",
                 &events
-            ),
+            ).into(),
             get_event_query: format!(
                 "SELECT event, event_id, version FROM {} WHERE aggregate_id = $1 AND event_id = $2",
                 &events
@@ -74,10 +74,10 @@ impl TableRegistry {
     }
 
     /// Get the stream events query for an aggregate type.
-    pub fn stream_events_query<T: Aggregate + 'static>(&self) -> Option<&str> {
+    pub fn stream_events_query<T: Aggregate + 'static>(&self) -> Option<Arc<str>> {
         self.tables
             .get(&TypeId::of::<T>())
-            .map(|config| config.stream_events_query.as_str())
+            .map(|config| config.stream_events_query.clone())
     }
 
     /// Get the get event query for an aggregate type.

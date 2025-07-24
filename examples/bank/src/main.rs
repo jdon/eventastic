@@ -9,7 +9,7 @@ use eventastic::aggregate::SideEffect;
 use eventastic::event::DomainEvent;
 use eventastic::repository::Repository;
 use eventastic_outbox_postgres::{RepositoryOutboxExt, SideEffectHandler, TableOutbox};
-use eventastic_postgres::{PostgresRepository, RootExt};
+use eventastic_postgres::{NoEncryption, PostgresRepository, RootExt};
 use serde::Deserialize;
 use serde::Serialize;
 use sqlx::{pool::PoolOptions, postgres::PgConnectOptions};
@@ -386,7 +386,7 @@ impl Aggregate for Account {
 
 // Using the default outbox implementation
 // You can also implement your own outbox handler by implementing the `SideEffectStorage` trait
-async fn get_repository() -> PostgresRepository<TableOutbox> {
+async fn get_repository() -> PostgresRepository<TableOutbox<NoEncryption>, NoEncryption> {
     let connection_options =
         PgConnectOptions::from_str("postgres://postgres:password@localhost/postgres").unwrap();
 
@@ -396,7 +396,13 @@ async fn get_repository() -> PostgresRepository<TableOutbox> {
         .register_with_tables::<Account>("events", "snapshots")
         .build();
 
-    PostgresRepository::new(connection_options, pool_options, TableOutbox, tables)
-        .await
-        .unwrap()
+    PostgresRepository::new(
+        connection_options,
+        pool_options,
+        TableOutbox::new(NoEncryption),
+        tables,
+        NoEncryption,
+    )
+    .await
+    .unwrap()
 }

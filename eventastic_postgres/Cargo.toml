@@ -12,6 +12,7 @@ keywords = ["postgres", "postgresql", "database", "ddd", "event-sourcing"]
 [dependencies]
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+async-stream = { workspace = true }
 chrono = { workspace = true }
 eventastic = { path = "../eventastic", version = "0.5" }
 futures = { workspace = true }

@@ -3,6 +3,7 @@ mod common;
 use common::helpers::{get_repository, get_side_effect};
 use common::test_aggregate::{Account, AccountEvent, SideEffects};
 use eventastic::aggregate::Root;
+use eventastic_postgres::NoEncryption;
 use uuid::Uuid;
 
 #[tokio::test]
@@ -43,7 +44,7 @@ async fn side_effect_is_correctly_stored() {
         .expect("Failed to commit transaction");
 
     // Assert - Verify the side effect was stored in the outbox table
-    let (side_effect, retries, requeue) = get_side_effect(event_id)
+    let (side_effect, retries, requeue) = get_side_effect(event_id, NoEncryption)
         .await
         .expect("Side effect should be stored in outbox table");
 
@@ -118,12 +119,12 @@ async fn multiple_side_effects_are_stored_correctly() {
     // Assert - Verify both side effects were stored
 
     // Check for the Open event's side effect
-    get_side_effect(open_event_id)
+    get_side_effect(open_event_id, NoEncryption)
         .await
         .expect("Open event side effect should be stored");
 
     // Check for the Add event's side effect
-    let (side_effect, _, _) = get_side_effect(add_event_id)
+    let (side_effect, _, _) = get_side_effect(add_event_id, NoEncryption)
         .await
         .expect("Add event side effect should be stored");
 

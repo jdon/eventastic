@@ -1,4 +1,5 @@
 mod common;
+mod encryption;
 mod pickle;
 mod reader_impl;
 mod repository;
@@ -6,6 +7,7 @@ mod side_effect;
 mod table_registry;
 mod transaction;
 
+pub use encryption::{EncryptionProvider, NoEncryption};
 pub use pickle::Pickle;
 pub use repository::PostgresRepository;
 pub use side_effect::SideEffectStorage;
@@ -42,6 +44,9 @@ pub enum DbError {
     /// An aggregate type was not registered in the table registry.
     #[error("Aggregate type not registered in table registry")]
     UnregisteredAggregate,
+    /// Failed to encrypt or decrypt data.
+    #[error("Encryption Error {0}")]
+    Encryption(anyhow::Error),
 }
 
 impl From<sqlx::Error> for DbError {
@@ -62,20 +67,21 @@ impl From<sqlx::Error> for DbError {
 /// This trait provides PostgreSQL-specific methods for working with aggregates
 /// that have UUID-based identifiers and can be serialized to JSON.
 #[async_trait]
-pub trait RootExt<T, O>
+pub trait RootExt<T, O, E>
 where
     T: Aggregate<AggregateId = Uuid> + Pickle + Send + Sync + 'static,
     <T as Aggregate>::DomainEvent: DomainEvent<EventId = Uuid> + Pickle + Send + Sync,
     <T as Aggregate>::SideEffect: SideEffect<SideEffectId = Uuid> + Pickle + Send + Sync,
     <T as Aggregate>::ApplyError: Send + Sync,
     O: SideEffectStorage + Send + Sync,
+    E: EncryptionProvider + Clone + Send + Sync,
 {
     /// Loads an aggregate from PostgreSQL storage by its UUID using an existing transaction.
     ///
     /// This method replays the event stream for the given aggregate ID,
     /// starting from any available snapshot and applying subsequent events.
     async fn load_with_transaction(
-        transaction: &mut PostgresTransaction<'_, O>,
+        transaction: &mut PostgresTransaction<'_, O, E>,
         aggregate_id: Uuid,
     ) -> Result<
         Context<T>,
@@ -93,7 +99,7 @@ where
     /// This method is more efficient for read-only operations as it uses a
     /// connection directly from the pool without starting a transaction.
     async fn load(
-        repository: &PostgresRepository<O>,
+        repository: &PostgresRepository<O, E>,
         aggregate_id: Uuid,
     ) -> Result<
         Context<T>,
@@ -110,12 +116,13 @@ where
     }
 }
 
-impl<T, O> RootExt<T, O> for T
+impl<T, O, E> RootExt<T, O, E> for T
 where
     T: Aggregate<AggregateId = Uuid> + Pickle + Send + Sync + 'static,
     <T as Aggregate>::DomainEvent: DomainEvent<EventId = Uuid> + Pickle + Send + Sync,
     <T as Aggregate>::SideEffect: SideEffect<SideEffectId = Uuid> + Pickle + Send + Sync,
     <T as Aggregate>::ApplyError: Send + Sync,
     O: SideEffectStorage + Send + Sync,
+    E: EncryptionProvider + Clone + Send + Sync,
 {
 }
