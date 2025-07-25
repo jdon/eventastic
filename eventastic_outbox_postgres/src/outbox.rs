@@ -1,9 +1,10 @@
+use anyhow::Context;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use eventastic::aggregate::SideEffect;
-use eventastic_postgres::{DbError, PostgresRepository, PostgresTransaction, SideEffectStorage};
-use serde::Serialize;
-use serde::de::DeserializeOwned;
+use eventastic_postgres::{
+    DbError, Pickle, PostgresRepository, PostgresTransaction, SideEffectStorage,
+};
 use sqlx::types::Uuid;
 use sqlx::{Postgres, Transaction};
 use std::sync::Arc;
@@ -16,20 +17,23 @@ pub struct TableOutbox;
 
 #[async_trait]
 impl SideEffectStorage for TableOutbox {
-    async fn store_side_effects<T: SideEffect<SideEffectId = Uuid> + Serialize + Send + Sync>(
+    async fn store_side_effects<T: SideEffect<SideEffectId = Uuid> + Pickle + Send + Sync>(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
         items: Vec<T>,
     ) -> Result<(), DbError> {
         let mut ids: Vec<Uuid> = Vec::with_capacity(items.len());
-        let mut messages: Vec<serde_json::Value> = Vec::with_capacity(items.len());
+        let mut messages: Vec<Vec<u8>> = Vec::with_capacity(items.len());
         let mut retries: Vec<i32> = Vec::with_capacity(items.len());
         let mut requeues: Vec<bool> = Vec::with_capacity(items.len());
         let mut created_ats: Vec<DateTime<Utc>> = Vec::with_capacity(items.len());
 
         for side_effect in items {
             let id = *side_effect.id();
-            let msg = serde_json::to_value(side_effect).map_err(DbError::SerializationError)?;
+            let msg = side_effect
+                .pickle()
+                .context("Failed to pickle side effect")
+                .map_err(DbError::PicklingError)?;
             ids.push(id);
             messages.push(msg);
             retries.push(0);
@@ -39,7 +43,7 @@ impl SideEffectStorage for TableOutbox {
 
         sqlx::query(
             "INSERT INTO outbox(id, message, retries, requeue, created_at)
-             SELECT * FROM UNNEST($1::uuid[], $2::jsonb[], $3::int[], $4::boolean[], $5::timestamptz[])
+             SELECT * FROM UNNEST($1::uuid[], $2::bytea[], $3::int[], $4::boolean[], $5::timestamptz[])
              ON CONFLICT (id) DO UPDATE SET
                 message = excluded.message,
                 retries = excluded.retries,
@@ -61,7 +65,7 @@ impl SideEffectStorage for TableOutbox {
 #[async_trait]
 pub trait TransactionOutboxExt<T>
 where
-    T: SideEffect + DeserializeOwned + Send + 'static,
+    T: SideEffect + Pickle + Send + 'static,
     T::SideEffectId: Clone + Send + 'static,
     for<'sql> T::SideEffectId:
         sqlx::Decode<'sql, Postgres> + sqlx::Type<Postgres> + sqlx::Encode<'sql, Postgres> + Unpin,
@@ -76,7 +80,7 @@ where
 #[async_trait]
 impl<T> TransactionOutboxExt<T> for PostgresTransaction<'_, TableOutbox>
 where
-    T: SideEffect + DeserializeOwned + Send + 'static,
+    T: SideEffect + Pickle + Send + 'static,
     T::SideEffectId: Clone + Send + 'static,
     for<'sql> T::SideEffectId:
         sqlx::Decode<'sql, Postgres> + sqlx::Type<Postgres> + sqlx::Encode<'sql, Postgres> + Unpin,
@@ -84,7 +88,7 @@ where
     async fn get_outbox_batch(&mut self) -> Result<Vec<OutboxMessage<T>>, DbError> {
         #[derive(sqlx::FromRow)]
         struct OutboxRow {
-            message: serde_json::Value,
+            message: Vec<u8>,
             retries: i32,
             requeue: bool,
         }
@@ -99,11 +103,11 @@ where
 
         rows.into_iter()
             .map(|row| {
-                let msg = serde_json::from_value(row.message)?;
+                let msg = T::unpickle(&row.message).context("Failed to unpickle side effect")?;
                 Ok(OutboxMessage::new(msg, row.retries as u16, row.requeue))
             })
-            .collect::<Result<Vec<_>, serde_json::Error>>()
-            .map_err(DbError::SerializationError)
+            .collect::<Result<Vec<_>, anyhow::Error>>()
+            .map_err(DbError::PicklingError)
     }
 
     async fn delete_outbox_item(&mut self, id: T::SideEffectId) -> Result<(), DbError> {
@@ -171,7 +175,7 @@ pub trait RepositoryOutboxExt {
         poll_interval: std::time::Duration,
     ) -> Result<(), DbError>
     where
-        T: SideEffect + DeserializeOwned + Send + Sync + 'static,
+        T: SideEffect + Pickle + Send + Sync + 'static,
         T::SideEffectId: Clone + Send + 'static,
         H: SideEffectHandler<SideEffect = T> + Send + Sync,
         for<'sql> T::SideEffectId: sqlx::Decode<'sql, Postgres>
@@ -188,7 +192,7 @@ impl RepositoryOutboxExt for PostgresRepository<TableOutbox> {
         poll_interval: std::time::Duration,
     ) -> Result<(), DbError>
     where
-        T: SideEffect + DeserializeOwned + Send + Sync + 'static,
+        T: SideEffect + Pickle + Send + Sync + 'static,
         T::SideEffectId: Clone + Send + 'static,
         H: SideEffectHandler<SideEffect = T> + Send + Sync,
         for<'sql> T::SideEffectId: sqlx::Decode<'sql, Postgres>
@@ -210,7 +214,7 @@ async fn process_outbox_batch<T, H>(
     handler: Arc<H>,
 ) -> Result<(), DbError>
 where
-    T: SideEffect + DeserializeOwned + Send + Sync + 'static,
+    T: SideEffect + Pickle + Send + Sync + 'static,
     T::SideEffectId: Clone + Send + 'static,
     H: SideEffectHandler<SideEffect = T> + Send + Sync,
     for<'a> PostgresTransaction<'a, TableOutbox>: TransactionOutboxExt<T>,

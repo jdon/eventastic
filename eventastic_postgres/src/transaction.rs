@@ -1,5 +1,7 @@
 use crate::common::utils;
+use crate::pickle::Pickle;
 use crate::{DbError, SideEffectStorage, TableRegistry, reader_impl};
+use anyhow::Context as _;
 use async_trait::async_trait;
 use chrono::DateTime;
 use chrono::Utc;
@@ -11,8 +13,6 @@ use eventastic::event::EventStoreEvent;
 use eventastic::repository::Snapshot;
 use eventastic::repository::{RepositoryError, RepositoryReader, RepositoryWriter};
 use futures::StreamExt;
-use serde::Serialize;
-use serde::de::DeserializeOwned;
 use sqlx::Row;
 use sqlx::types::Uuid;
 use sqlx::{Postgres, Transaction};
@@ -66,9 +66,9 @@ where
         id: &Uuid,
     ) -> Result<Context<T>, RepositoryError<T::ApplyError, Uuid, DbError>>
     where
-        T: Aggregate<AggregateId = Uuid> + 'static + Send + Sync + Serialize + DeserializeOwned,
-        T::DomainEvent: DomainEvent<EventId = Uuid> + Serialize + DeserializeOwned + Send + Sync,
-        T::SideEffect: SideEffect<SideEffectId = Uuid> + Serialize + Send + Sync,
+        T: Aggregate<AggregateId = Uuid> + 'static + Send + Sync + Pickle,
+        T::DomainEvent: DomainEvent<EventId = Uuid> + Pickle + Send + Sync,
+        T::SideEffect: SideEffect<SideEffectId = Uuid> + Pickle + Send + Sync,
         T::ApplyError: Send + Sync,
     {
         Context::load(self, id).await
@@ -80,9 +80,9 @@ where
         aggregate: &mut Context<T>,
     ) -> Result<(), SaveError<T, DbError>>
     where
-        T: Aggregate<AggregateId = Uuid> + 'static + Send + Sync + Serialize + DeserializeOwned,
-        T::DomainEvent: DomainEvent<EventId = Uuid> + Serialize + DeserializeOwned + Send + Sync,
-        T::SideEffect: SideEffect<SideEffectId = Uuid> + Serialize + Send + Sync,
+        T: Aggregate<AggregateId = Uuid> + 'static + Send + Sync + Pickle,
+        T::DomainEvent: DomainEvent<EventId = Uuid> + Pickle + Send + Sync,
+        T::SideEffect: SideEffect<SideEffectId = Uuid> + Pickle + Send + Sync,
         T::ApplyError: Send + Sync,
     {
         aggregate.save(self).await
@@ -92,9 +92,9 @@ where
 #[async_trait]
 impl<O, T> RepositoryReader<T> for PostgresTransaction<'_, O>
 where
-    T: Aggregate<AggregateId = Uuid> + 'static + DeserializeOwned + Serialize + Send + Sync,
-    T::SideEffect: SideEffect<SideEffectId = Uuid> + Serialize + Send + Sync,
-    T::DomainEvent: DomainEvent<EventId = Uuid> + Serialize + DeserializeOwned + Send + Sync,
+    T: Aggregate<AggregateId = Uuid> + 'static + Pickle + Send + Sync,
+    T::SideEffect: SideEffect<SideEffectId = Uuid> + Pickle + Send + Sync,
+    T::DomainEvent: DomainEvent<EventId = Uuid> + Pickle + Send + Sync,
     T::ApplyError: Send + Sync,
     O: SideEffectStorage,
 {
@@ -156,9 +156,9 @@ where
 #[async_trait]
 impl<O, T> RepositoryWriter<T> for PostgresTransaction<'_, O>
 where
-    T: Aggregate<AggregateId = Uuid> + 'static + DeserializeOwned + Serialize + Send + Sync,
-    T::SideEffect: SideEffect<SideEffectId = Uuid> + Serialize + Send + Sync,
-    T::DomainEvent: DomainEvent<EventId = Uuid> + Serialize + DeserializeOwned + Send + Sync,
+    T: Aggregate<AggregateId = Uuid> + 'static + Pickle + Send + Sync,
+    T::SideEffect: SideEffect<SideEffectId = Uuid> + Pickle + Send + Sync,
+    T::DomainEvent: DomainEvent<EventId = Uuid> + Pickle + Send + Sync,
     T::ApplyError: Send + Sync,
     O: SideEffectStorage,
 {
@@ -172,7 +172,7 @@ where
             Vec::with_capacity(events.len());
         let mut versions_to_insert: Vec<i64> = Vec::with_capacity(events.len());
         let mut aggregate_ids_to_insert: Vec<T::AggregateId> = Vec::with_capacity(events.len());
-        let mut events_to_insert: Vec<serde_json::Value> = Vec::with_capacity(events.len());
+        let mut events_to_insert: Vec<Vec<u8>> = Vec::with_capacity(events.len());
         let mut created_ats_to_insert: Vec<DateTime<Utc>> = Vec::with_capacity(events.len());
 
         for event in events {
@@ -181,8 +181,11 @@ where
 
             let version = utils::version_to_i64(version)?;
 
-            let serialised_event =
-                serde_json::to_value(event.event).map_err(DbError::SerializationError)?;
+            let serialised_event = event
+                .event
+                .pickle()
+                .context("Failed to pickle event")
+                .map_err(DbError::PicklingError)?;
 
             event_ids_to_insert.push(event_id);
             versions_to_insert.push(version);
@@ -214,8 +217,11 @@ where
     /// Stores a snapshot of the aggregate in the database
     async fn store_snapshot(&mut self, snapshot: Snapshot<T>) -> Result<(), Self::DbError> {
         let aggregated_id = *snapshot.aggregate.aggregate_id();
-        let aggregate =
-            serde_json::to_value(snapshot.aggregate).map_err(DbError::SerializationError)?;
+        let aggregate = snapshot
+            .aggregate
+            .pickle()
+            .context("Failed to pickle aggregate")
+            .map_err(DbError::PicklingError)?;
 
         let upsert_query = self
             .tables

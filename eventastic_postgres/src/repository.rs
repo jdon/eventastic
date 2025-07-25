@@ -1,3 +1,4 @@
+use crate::pickle::Pickle;
 use crate::{DbError, PostgresTransaction, SideEffectStorage, TableRegistry, reader_impl};
 use async_trait::async_trait;
 use eventastic::{
@@ -6,7 +7,6 @@ use eventastic::{
     repository::{Repository, RepositoryError, RepositoryReader, Snapshot},
 };
 use futures::StreamExt;
-use serde::{Serialize, de::DeserializeOwned};
 use sqlx::{
     Pool, Postgres,
     postgres::{PgConnectOptions, PgPoolOptions},
@@ -82,9 +82,9 @@ where
 #[async_trait]
 impl<O, T> RepositoryReader<T> for PostgresRepository<O>
 where
-    T: Aggregate<AggregateId = Uuid> + DeserializeOwned + Serialize + Send + Sync + 'static,
-    T::DomainEvent: DomainEvent<EventId = Uuid> + Serialize + DeserializeOwned + Send + Sync,
-    T::SideEffect: SideEffect<SideEffectId = Uuid> + Serialize + Send + Sync,
+    T: Aggregate<AggregateId = Uuid> + Pickle + Send + Sync + 'static,
+    T::DomainEvent: DomainEvent<EventId = Uuid> + Pickle + Send + Sync,
+    T::SideEffect: SideEffect<SideEffectId = Uuid> + Pickle + Send + Sync,
     T::ApplyError: Send + Sync,
     O: SideEffectStorage + Clone + Send + Sync,
 {
@@ -146,9 +146,9 @@ where
 #[async_trait]
 impl<O, T> Repository<T> for PostgresRepository<O>
 where
-    T: Aggregate<AggregateId = Uuid> + DeserializeOwned + Serialize + Send + Sync + 'static,
-    T::DomainEvent: DomainEvent<EventId = Uuid> + Serialize + DeserializeOwned + Send + Sync,
-    T::SideEffect: eventastic::aggregate::SideEffect<SideEffectId = Uuid> + Serialize + Send + Sync,
+    T: Aggregate<AggregateId = Uuid> + Pickle + Send + Sync + 'static,
+    T::DomainEvent: DomainEvent<EventId = Uuid> + Pickle + Send + Sync,
+    T::SideEffect: eventastic::aggregate::SideEffect<SideEffectId = Uuid> + Pickle + Send + Sync,
     T::ApplyError: Send + Sync,
     O: SideEffectStorage + Clone + Send + Sync,
 {

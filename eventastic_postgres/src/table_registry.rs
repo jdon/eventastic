@@ -37,7 +37,7 @@ impl TableConfig {
             ),
             insert_events_query: format!(
                 "INSERT INTO {} (event_id, version, aggregate_id, event, created_at) \
-                 SELECT * FROM UNNEST($1::uuid[], $2::bigint[], $3::uuid[], $4::jsonb[], $5::timestamptz[]) \
+                 SELECT * FROM UNNEST($1::uuid[], $2::bigint[], $3::uuid[], $4::bytea[], $5::timestamptz[]) \
                  ON CONFLICT DO NOTHING returning event_id",
                 &events
             ),

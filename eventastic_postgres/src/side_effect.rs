@@ -1,7 +1,7 @@
 use crate::DbError;
+use crate::pickle::Pickle;
 use async_trait::async_trait;
 use eventastic::aggregate::SideEffect;
-use serde::Serialize;
 use sqlx::types::Uuid;
 use sqlx::{Postgres, Transaction};
 
@@ -25,7 +25,7 @@ pub trait SideEffectStorage: Send + Sync {
     /// # Errors
     ///
     /// Returns [`DbError`] if the storage operation fails.
-    async fn store_side_effects<T: SideEffect<SideEffectId = Uuid> + Serialize + Send + Sync>(
+    async fn store_side_effects<T: SideEffect<SideEffectId = Uuid> + Pickle + Send + Sync>(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
         items: Vec<T>,

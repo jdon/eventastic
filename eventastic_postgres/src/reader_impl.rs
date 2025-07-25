@@ -6,13 +6,13 @@
 
 use crate::DbError;
 use crate::common::{PartialEventRow, PartialSnapshotRow, utils};
+use crate::pickle::Pickle;
 use eventastic::aggregate::Aggregate;
 use eventastic::event::DomainEvent;
 use eventastic::event::EventStoreEvent;
 use eventastic::repository::Snapshot;
 use futures::stream;
 use futures_util::stream::StreamExt;
-use serde::de::DeserializeOwned;
 use sqlx::types::Uuid;
 use sqlx::{Executor, query_as};
 
@@ -26,7 +26,7 @@ pub fn stream_from<'e, 'c: 'e, E, T>(
 where
     E: Executor<'c, Database = sqlx::Postgres> + 'e,
     T: Aggregate<AggregateId = Uuid>,
-    T::DomainEvent: DomainEvent<EventId = Uuid> + DeserializeOwned + Send + 'e,
+    T::DomainEvent: DomainEvent<EventId = Uuid> + Pickle + Send + 'e,
 {
     let Ok(version) = utils::version_to_i64(version) else {
         return stream::iter(vec![Err(DbError::InvalidVersionNumber)]).boxed();
@@ -59,7 +59,7 @@ pub async fn get_event<'c, E, T>(
 where
     E: Executor<'c, Database = sqlx::Postgres>,
     T: Aggregate<AggregateId = Uuid>,
-    T::DomainEvent: DomainEvent<EventId = Uuid> + DeserializeOwned + Send,
+    T::DomainEvent: DomainEvent<EventId = Uuid> + Pickle + Send,
 {
     query_as::<_, PartialEventRow>(query)
         .bind(aggregate_id)
@@ -78,7 +78,7 @@ pub async fn get_snapshot<'c, E, T>(
 ) -> Result<Option<Snapshot<T>>, DbError>
 where
     E: Executor<'c, Database = sqlx::Postgres>,
-    T: Aggregate<AggregateId = Uuid> + DeserializeOwned,
+    T: Aggregate<AggregateId = Uuid> + Pickle,
 {
     let row = query_as::<_, PartialSnapshotRow>(query)
         .bind(id)

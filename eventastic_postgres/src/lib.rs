@@ -1,23 +1,25 @@
 mod common;
+mod pickle;
 mod reader_impl;
 mod repository;
 mod side_effect;
 mod table_registry;
 mod transaction;
+
+pub use pickle::Pickle;
+pub use repository::PostgresRepository;
+pub use side_effect::SideEffectStorage;
+pub use table_registry::{TableConfig, TableRegistry, TableRegistryBuilder};
+pub use transaction::PostgresTransaction;
+
 use async_trait::async_trait;
 use eventastic::{
     aggregate::{Aggregate, Context, SideEffect},
     event::DomainEvent,
     repository::{Repository, RepositoryError},
 };
-pub use repository::PostgresRepository;
-use serde::{Serialize, de::DeserializeOwned};
-pub use side_effect::SideEffectStorage;
 use sqlx::types::Uuid;
-pub use table_registry::{TableConfig, TableRegistry, TableRegistryBuilder};
-
 use thiserror::Error;
-pub use transaction::PostgresTransaction;
 
 /// Errors that can occur during PostgreSQL operations.
 #[derive(Error, Debug)]
@@ -25,14 +27,14 @@ pub enum DbError {
     /// A database operation failed.
     #[error("DB Error {0}")]
     DbError(sqlx::Error),
-    /// Failed to serialize or deserialize data to/from JSON.
-    #[error("Serialization Error {0}")]
-    SerializationError(#[from] serde_json::Error),
+    /// Failed to pickle data.
+    #[error("Pickling Error {0}")]
+    PicklingError(anyhow::Error),
     /// An invalid version number was encountered (e.g., negative value where positive expected).
     #[error("Invalid Version Number")]
     InvalidVersionNumber,
     /// An invalid snapshot version number was encountered.
-    #[error("Invalid Snapshot Version number")]
+    #[error("Invalid Snapshot Version Number")]
     InvalidSnapshotVersion,
     /// A concurrent modification was detected (optimistic locking failure).
     #[error("Optimistic Concurrency Error")]
@@ -62,10 +64,9 @@ impl From<sqlx::Error> for DbError {
 #[async_trait]
 pub trait RootExt<T, O>
 where
-    T: Aggregate<AggregateId = Uuid> + Serialize + DeserializeOwned + Send + Sync + 'static,
-    <T as Aggregate>::DomainEvent:
-        DomainEvent<EventId = Uuid> + Serialize + DeserializeOwned + Send + Sync,
-    <T as Aggregate>::SideEffect: SideEffect<SideEffectId = Uuid> + Serialize + Send + Sync,
+    T: Aggregate<AggregateId = Uuid> + Pickle + Send + Sync + 'static,
+    <T as Aggregate>::DomainEvent: DomainEvent<EventId = Uuid> + Pickle + Send + Sync,
+    <T as Aggregate>::SideEffect: SideEffect<SideEffectId = Uuid> + Pickle + Send + Sync,
     <T as Aggregate>::ApplyError: Send + Sync,
     O: SideEffectStorage + Send + Sync,
 {
@@ -111,10 +112,9 @@ where
 
 impl<T, O> RootExt<T, O> for T
 where
-    T: Aggregate<AggregateId = Uuid> + Serialize + DeserializeOwned + Send + Sync + 'static,
-    <T as Aggregate>::DomainEvent:
-        DomainEvent<EventId = Uuid> + Serialize + DeserializeOwned + Send + Sync,
-    <T as Aggregate>::SideEffect: SideEffect<SideEffectId = Uuid> + Serialize + Send + Sync,
+    T: Aggregate<AggregateId = Uuid> + Pickle + Send + Sync + 'static,
+    <T as Aggregate>::DomainEvent: DomainEvent<EventId = Uuid> + Pickle + Send + Sync,
+    <T as Aggregate>::SideEffect: SideEffect<SideEffectId = Uuid> + Pickle + Send + Sync,
     <T as Aggregate>::ApplyError: Send + Sync,
     O: SideEffectStorage + Send + Sync,
 {
