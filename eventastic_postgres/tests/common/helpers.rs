@@ -388,3 +388,27 @@ pub async fn get_side_effect(
         None
     }
 }
+
+// Helper function to create an account with many events efficiently
+pub async fn create_account_with_many_events(
+    account_id: Uuid,
+    num_events: usize,
+) -> Context<Account> {
+    let mut builder = AccountBuilder::new().with_open_event(AccountEvent::Open {
+        account_id,
+        event_id: Uuid::new_v4(),
+        email: "test@example.com".to_string(),
+        starting_balance: 1000,
+    });
+
+    // Add alternating add and remove events
+    for i in 0..num_events {
+        if i % 2 == 0 {
+            builder = builder.with_add_event(10);
+        } else {
+            builder = builder.with_remove_event(5);
+        }
+    }
+
+    builder.build()
+}

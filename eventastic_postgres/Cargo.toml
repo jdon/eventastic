@@ -21,6 +21,7 @@ serde_json = { workspace = true }
 sqlx = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+async-stream = { workspace = true }
 
 [dev-dependencies]
 eventastic_outbox_postgres = { path = "../eventastic_outbox_postgres" }

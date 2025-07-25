@@ -11,8 +11,6 @@ use eventastic::aggregate::Aggregate;
 use eventastic::event::DomainEvent;
 use eventastic::event::EventStoreEvent;
 use eventastic::repository::Snapshot;
-use futures::stream;
-use futures_util::stream::StreamExt;
 use sqlx::types::Uuid;
 use sqlx::{Executor, query_as};
 
@@ -28,27 +26,24 @@ where
     T: Aggregate<AggregateId = Uuid>,
     T::DomainEvent: DomainEvent<EventId = Uuid> + Pickle + Send + 'e,
 {
-    let Ok(version) = utils::version_to_i64(version) else {
-        return stream::iter(vec![Err(DbError::InvalidVersionNumber)]).boxed();
-    };
-
     let id = *id;
 
-    stream::once(async move {
-        query_as::<_, PartialEventRow>(&query)
+    Box::pin(async_stream::stream! {
+        let version = utils::version_to_i64(version)?;
+
+        let stream = query_as::<_, PartialEventRow>(&query)
             .bind(id)
             .bind(version)
-            .fetch_all(executor)
-            .await
-    })
-    .map(|result| match result {
-        Ok(rows) => stream::iter(rows.into_iter().map(PartialEventRow::to_event)).boxed(),
-        Err(e) => stream::iter(vec![Err(DbError::DbError(e))]).boxed(),
-    })
-    .flatten()
-    .boxed()
-}
+            .fetch(executor);
 
+        for await result in stream {
+            yield match result {
+                Ok(row) => PartialEventRow::to_event::<T::DomainEvent>(row),
+                Err(e) => Err(DbError::from(e)),
+            };
+        }
+    })
+}
 /// Generic implementation for getting an event by ID from configured table.
 pub async fn get_event<'c, E, T>(
     executor: E,

@@ -3,7 +3,12 @@ mod common;
 use common::helpers::{AccountBuilder, get_latest_event_timestamp, get_repository, load_account};
 use common::test_aggregate::AccountEvent;
 use eventastic::aggregate::Context;
+use eventastic::repository::RepositoryReader;
+use futures::StreamExt;
 use uuid::Uuid;
+
+use crate::common::helpers::create_account_with_many_events;
+use crate::common::test_aggregate::Account;
 
 #[tokio::test]
 pub async fn aggregate_is_successfully_saved_and_loaded() {
@@ -466,4 +471,50 @@ pub async fn repository_load_works_without_transaction() {
     // Verify it loads the same data as the transaction-based approach
     let transaction_loaded_account = load_account(account_id).await;
     assert_eq!(loaded_account.state(), transaction_loaded_account.state());
+}
+
+#[tokio::test]
+async fn streaming_returns_events_in_version_order() {
+    let repository = get_repository().await;
+    let account_id = Uuid::new_v4();
+
+    // Create an account with many events
+    let mut account = create_account_with_many_events(account_id, 150_000).await;
+
+    // Save the account
+    let mut transaction = repository
+        .begin_transaction()
+        .await
+        .expect("Failed to begin transaction");
+    transaction
+        .store(&mut account)
+        .await
+        .expect("Failed to save account");
+    transaction
+        .commit()
+        .await
+        .expect("Failed to commit transaction");
+
+    let mut transaction = repository
+        .begin_transaction()
+        .await
+        .expect("Failed to begin transaction");
+
+    let mut event_count = 0;
+
+    let mut events_stream =
+        RepositoryReader::<Account>::stream_from(&mut transaction, &account_id, 0);
+
+    // Process events one by one to verify streaming behavior
+    while let Some(event_result) = events_stream.next().await {
+        let event = event_result.expect("Failed to get event from stream");
+        event_count += 1;
+
+        // Verify we're getting events in order (events are 0-indexed)
+        assert_eq!(
+            event.version as usize,
+            event_count - 1,
+            "Events should be in order"
+        );
+    }
 }
