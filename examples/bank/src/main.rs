@@ -386,7 +386,7 @@ impl Aggregate for Account {
 
 // Using the default outbox implementation
 // You can also implement your own outbox handler by implementing the `SideEffectStorage` trait
-async fn get_repository() -> PostgresRepository<TableOutbox<NoEncryption>, NoEncryption> {
+async fn get_repository() -> PostgresRepository<Account, TableOutbox<NoEncryption>, NoEncryption> {
     let connection_options =
         PgConnectOptions::from_str("postgres://postgres:password@localhost/postgres").unwrap();
 

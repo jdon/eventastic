@@ -11,7 +11,8 @@ use sqlx::{pool::PoolOptions, postgres::PgConnectOptions};
 use std::str::FromStr;
 use uuid::Uuid;
 
-pub async fn get_repository() -> PostgresRepository<TableOutbox<NoEncryption>, NoEncryption> {
+pub async fn get_repository() -> PostgresRepository<Account, TableOutbox<NoEncryption>, NoEncryption>
+{
     let host = std::env::var("POSTGRES_HOST").unwrap_or_else(|_| "localhost".to_string());
     let connection_string = format!("postgres://postgres:password@{host}/postgres");
     let connection_options = PgConnectOptions::from_str(connection_string.as_str())
@@ -39,7 +40,7 @@ pub async fn get_repository() -> PostgresRepository<TableOutbox<NoEncryption>, N
 }
 
 pub async fn get_encrypted_repository()
--> PostgresRepository<TableOutbox<TestEncryptionProvider>, TestEncryptionProvider> {
+-> PostgresRepository<Account, TableOutbox<TestEncryptionProvider>, TestEncryptionProvider> {
     let host = std::env::var("POSTGRES_HOST").unwrap_or_else(|_| "localhost".to_string());
     let connection_string = format!("postgres://postgres:password@{host}/postgres");
     let connection_options = PgConnectOptions::from_str(connection_string.as_str())

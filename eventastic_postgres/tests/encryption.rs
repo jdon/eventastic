@@ -80,11 +80,13 @@ async fn when_encryption_is_enabled_events_can_be_saved_and_loaded_by_id() {
     // Assert
     let mut repository = get_encrypted_repository().await;
     let result = <PostgresRepository<
+        Account,
         TableOutbox<TestEncryptionProvider>,
         TestEncryptionProvider,
     > as RepositoryReader<Account>>::get_event(
         &mut repository, &account_id, &event_id
-    ).await;
+    )
+    .await;
     assert!(matches!(result, Ok(Some(e)) if e.event == open_event));
 }
 
@@ -124,7 +126,7 @@ async fn when_encryption_is_enabled_events_cannot_be_loaded_by_id_without_encryp
     // Assert
     let mut repository = get_repository().await;
     let result =
-        <PostgresRepository<TableOutbox<NoEncryption>, NoEncryption> as RepositoryReader<
+        <PostgresRepository<Account, TableOutbox<NoEncryption>, NoEncryption> as RepositoryReader<
             Account,
         >>::get_event(&mut repository, &account_id, &event_id)
         .await;
@@ -156,6 +158,7 @@ async fn when_encryption_is_enabled_events_can_be_saved_and_loaded() {
     // Assert
     let mut repository = get_encrypted_repository().await;
     let mut events = <PostgresRepository<
+        Account,
         TableOutbox<TestEncryptionProvider>,
         TestEncryptionProvider,
     > as RepositoryReader<Account>>::stream_from(
@@ -191,7 +194,7 @@ async fn when_encryption_is_enabled_events_cannot_be_loaded_without_encryption()
     // Assert
     let mut repository = get_repository().await;
     let mut events =
-        <PostgresRepository<TableOutbox<NoEncryption>, NoEncryption> as RepositoryReader<
+        <PostgresRepository<Account, TableOutbox<NoEncryption>, NoEncryption> as RepositoryReader<
             Account,
         >>::stream_from(&mut repository, &account_id, 0);
     while let Some(event) = events.next().await {
@@ -228,7 +231,7 @@ async fn when_encryption_is_enabled_aggregate_cannot_be_loaded_without_encryptio
     let repository = get_repository().await;
     let mut transaction = repository.begin_transaction().await.unwrap();
     assert!(matches!(
-        transaction.get::<Account>(&account_id).await,
+        transaction.get(&account_id).await,
         Err(eventastic::repository::RepositoryError::Repository(
             eventastic_postgres::DbError::PicklingError(_)
         )),
