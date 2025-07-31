@@ -68,8 +68,7 @@ where
     pub async fn get(
         &mut self,
         id: &Uuid,
-    ) -> Result<Context<T>, RepositoryError<T::ApplyError, Uuid, DbError<E::Error>>>
-where {
+    ) -> Result<Context<T>, RepositoryError<T::ApplyError, Uuid, DbError<E::Error>>> {
         Context::load(self, id).await
     }
 
