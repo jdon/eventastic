@@ -101,7 +101,7 @@ where
 }
 
 #[async_trait]
-impl<T, E> TransactionOutboxExt<T, E::Error> for PostgresTransaction<'_, TableOutbox<E>, E>
+impl<T, E> TransactionOutboxExt<T, E::Error> for PostgresTransaction<'_, T, TableOutbox<E>, E>
 where
     T: SideEffect + Pickle + Send + 'static,
     T::SideEffectId: Clone + Send + 'static,
@@ -211,41 +211,36 @@ pub trait SideEffectHandler {
 
 /// Extension trait for running the outbox worker using a [`TableOutbox`].
 #[async_trait]
-pub trait RepositoryOutboxExt<E> {
-    async fn start_outbox<T, H>(
+pub trait RepositoryOutboxExt<T, H, E>
+where
+    T: SideEffect + Pickle + Send + Sync + 'static,
+    T::SideEffectId: Clone + Send + 'static,
+    H: SideEffectHandler<SideEffect = T> + Send + Sync,
+    for<'sql> T::SideEffectId:
+        sqlx::Decode<'sql, Postgres> + sqlx::Type<Postgres> + sqlx::Encode<'sql, Postgres> + Unpin,
+{
+    async fn start_outbox(
         &self,
         handler: H,
         poll_interval: std::time::Duration,
-    ) -> Result<(), DbError<E>>
-    where
-        T: SideEffect + Pickle + Send + Sync + 'static,
-        T::SideEffectId: Clone + Send + 'static,
-        H: SideEffectHandler<SideEffect = T> + Send + Sync,
-        for<'sql> T::SideEffectId: sqlx::Decode<'sql, Postgres>
-            + sqlx::Type<Postgres>
-            + sqlx::Encode<'sql, Postgres>
-            + Unpin;
+    ) -> Result<(), DbError<E>>;
 }
 
 #[async_trait]
-impl<E> RepositoryOutboxExt<E::Error> for PostgresRepository<TableOutbox<E>, E>
+impl<T, H, E> RepositoryOutboxExt<T, H, E::Error> for PostgresRepository<T, TableOutbox<E>, E>
 where
+    T: SideEffect + Pickle + Clone + Send + Sync + 'static,
+    T::SideEffectId: Clone + Send + 'static,
+    H: SideEffectHandler<SideEffect = T> + Send + Sync + 'static,
     E: EncryptionProvider + Clone + Send + Sync + 'static,
+    for<'sql> T::SideEffectId:
+        sqlx::Decode<'sql, Postgres> + sqlx::Type<Postgres> + sqlx::Encode<'sql, Postgres> + Unpin,
 {
-    async fn start_outbox<T, H>(
+    async fn start_outbox(
         &self,
         handler: H,
         poll_interval: std::time::Duration,
-    ) -> Result<(), DbError<E::Error>>
-    where
-        T: SideEffect + Pickle + Send + Sync + 'static,
-        T::SideEffectId: Clone + Send + 'static,
-        H: SideEffectHandler<SideEffect = T> + Send + Sync,
-        for<'sql> T::SideEffectId: sqlx::Decode<'sql, Postgres>
-            + sqlx::Type<Postgres>
-            + sqlx::Encode<'sql, Postgres>
-            + Unpin,
-    {
+    ) -> Result<(), DbError<E::Error>> {
         let handler = Arc::new(handler);
         loop {
             let deadline = std::time::Instant::now() + poll_interval;
@@ -256,15 +251,15 @@ where
 }
 
 async fn process_outbox_batch<T, H, E>(
-    repo: &PostgresRepository<TableOutbox<E>, E>,
+    repo: &PostgresRepository<T, TableOutbox<E>, E>,
     handler: Arc<H>,
 ) -> Result<(), DbError<E::Error>>
 where
-    T: SideEffect + Pickle + Send + Sync + 'static,
+    T: SideEffect + Pickle + Clone + Send + Sync + 'static,
     T::SideEffectId: Clone + Send + 'static,
     H: SideEffectHandler<SideEffect = T> + Send + Sync,
     E: EncryptionProvider + Clone + Send + Sync + 'static,
-    for<'a> PostgresTransaction<'a, TableOutbox<E>, E>: TransactionOutboxExt<T, E::Error>,
+    for<'a> PostgresTransaction<'a, T, TableOutbox<E>, E>: TransactionOutboxExt<T, E::Error>,
     for<'sql> T::SideEffectId:
         sqlx::Decode<'sql, Postgres> + sqlx::Type<Postgres> + sqlx::Encode<'sql, Postgres> + Unpin,
 {

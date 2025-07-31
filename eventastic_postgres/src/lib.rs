@@ -76,7 +76,7 @@ where
     <T as Aggregate>::DomainEvent: DomainEvent<EventId = Uuid> + Pickle + Send + Sync,
     <T as Aggregate>::SideEffect: SideEffect<SideEffectId = Uuid> + Pickle + Send + Sync,
     <T as Aggregate>::ApplyError: Send + Sync,
-    O: SideEffectStorage<E::Error> + Send + Sync,
+    O: SideEffectStorage<E::Error, T::SideEffect> + Send + Sync,
     E: EncryptionProvider + Clone + Send + Sync,
 {
     /// Loads an aggregate from PostgreSQL storage by its UUID using an existing transaction.
@@ -84,7 +84,7 @@ where
     /// This method replays the event stream for the given aggregate ID,
     /// starting from any available snapshot and applying subsequent events.
     async fn load_with_transaction(
-        transaction: &mut PostgresTransaction<'_, O, E>,
+        transaction: &mut PostgresTransaction<'_, T, O, E>,
         aggregate_id: Uuid,
     ) -> Result<
         Context<T>,
@@ -102,7 +102,7 @@ where
     /// This method is more efficient for read-only operations as it uses a
     /// connection directly from the pool without starting a transaction.
     async fn load(
-        repository: &PostgresRepository<O, E>,
+        repository: &PostgresRepository<T, O, E>,
         aggregate_id: Uuid,
     ) -> Result<
         Context<T>,
@@ -125,7 +125,7 @@ where
     <T as Aggregate>::DomainEvent: DomainEvent<EventId = Uuid> + Pickle + Send + Sync,
     <T as Aggregate>::SideEffect: SideEffect<SideEffectId = Uuid> + Pickle + Send + Sync,
     <T as Aggregate>::ApplyError: Send + Sync,
-    O: SideEffectStorage<E::Error> + Send + Sync,
+    O: SideEffectStorage<E::Error, T::SideEffect> + Send + Sync,
     E: EncryptionProvider + Clone + Send + Sync,
 {
 }

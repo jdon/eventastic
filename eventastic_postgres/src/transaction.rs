@@ -21,21 +21,22 @@ use sqlx::{Postgres, Transaction};
 ///
 /// This struct provides transactional access to PostgreSQL storage for event sourcing
 /// operations. It manages database transactions and integrates with side effect storage.
-pub struct PostgresTransaction<'a, O, E>
-where
-    O: SideEffectStorage<E::Error>,
-    E: EncryptionProvider,
-{
+pub struct PostgresTransaction<'a, T, O, E> {
     pub(crate) inner: Transaction<'a, Postgres>,
     pub(crate) outbox: &'a O,
     pub(crate) tables: &'a TableRegistry,
     pub(crate) encryption_provider: &'a E,
+    pub(crate) phantom_side_effect: std::marker::PhantomData<T>,
 }
 
-impl<'a, O, E> PostgresTransaction<'a, O, E>
+impl<'a, T, O, E> PostgresTransaction<'a, T, O, E>
 where
-    O: SideEffectStorage<E::Error>,
+    O: SideEffectStorage<E::Error, T::SideEffect>,
     E: EncryptionProvider + Send + Sync + 'static,
+    T: Aggregate<AggregateId = Uuid> + 'static + Send + Sync + Pickle,
+    T::DomainEvent: DomainEvent<EventId = Uuid> + Pickle + Send + Sync,
+    T::SideEffect: SideEffect<SideEffectId = Uuid> + Pickle + Send + Sync,
+    T::ApplyError: Send + Sync,
 {
     /// Commit the transaction to the database.
     ///
@@ -64,30 +65,19 @@ where
     }
 
     /// Get an aggregate by ID using the table registry.
-    pub async fn get<T>(
+    pub async fn get(
         &mut self,
         id: &Uuid,
     ) -> Result<Context<T>, RepositoryError<T::ApplyError, Uuid, DbError<E::Error>>>
-    where
-        T: Aggregate<AggregateId = Uuid> + 'static + Send + Sync + Pickle,
-        T::DomainEvent: DomainEvent<EventId = Uuid> + Pickle + Send + Sync,
-        T::SideEffect: SideEffect<SideEffectId = Uuid> + Pickle + Send + Sync,
-        T::ApplyError: Send + Sync,
-    {
+where {
         Context::load(self, id).await
     }
 
     /// Store an aggregate using the table registry.
-    pub async fn store<T>(
+    pub async fn store(
         &mut self,
         aggregate: &mut Context<T>,
-    ) -> Result<(), SaveError<T, DbError<E::Error>>>
-    where
-        T: Aggregate<AggregateId = Uuid> + 'static + Send + Sync + Pickle,
-        T::DomainEvent: DomainEvent<EventId = Uuid> + Pickle + Send + Sync,
-        T::SideEffect: SideEffect<SideEffectId = Uuid> + Pickle + Send + Sync,
-        T::ApplyError: Send + Sync,
-    {
+    ) -> Result<(), SaveError<T, DbError<E::Error>>> {
         aggregate.save(self).await
     }
 
@@ -97,13 +87,13 @@ where
 }
 
 #[async_trait]
-impl<O, T, E> RepositoryReader<T> for PostgresTransaction<'_, O, E>
+impl<O, T, E> RepositoryReader<T> for PostgresTransaction<'_, T, O, E>
 where
     T: Aggregate<AggregateId = Uuid> + 'static + Pickle + Send + Sync,
     T::SideEffect: SideEffect<SideEffectId = Uuid> + Pickle + Send + Sync,
     T::DomainEvent: DomainEvent<EventId = Uuid> + Pickle + Send + Sync,
     T::ApplyError: Send + Sync,
-    O: SideEffectStorage<E::Error>,
+    O: SideEffectStorage<E::Error, T::SideEffect>,
     E: EncryptionProvider + Send + Sync,
 {
     type DbError = DbError<E::Error>;
@@ -171,13 +161,13 @@ where
 }
 
 #[async_trait]
-impl<O, T, E> RepositoryWriter<T> for PostgresTransaction<'_, O, E>
+impl<T, O, E> RepositoryWriter<T> for PostgresTransaction<'_, T, O, E>
 where
     T: Aggregate<AggregateId = Uuid> + 'static + Pickle + Send + Sync,
     T::SideEffect: SideEffect<SideEffectId = Uuid> + Pickle + Send + Sync,
     T::DomainEvent: DomainEvent<EventId = Uuid> + Pickle + Send + Sync,
     T::ApplyError: Send + Sync,
-    O: SideEffectStorage<E::Error>,
+    O: SideEffectStorage<E::Error, T::SideEffect>,
     E: EncryptionProvider + Send + Sync,
 {
     /// Stores new domain events to the database

@@ -1,3 +1,5 @@
+use std::marker::PhantomData;
+
 use crate::{
     DbError, PostgresTransaction, SideEffectStorage, TableRegistry, encryption::EncryptionProvider,
     pickle::Pickle, reader_impl,
@@ -21,20 +23,24 @@ use sqlx::{
 /// using PostgreSQL as the backing store. It integrates with a configurable side effect
 /// storage mechanism for handling the outbox pattern.
 #[derive(Clone)]
-pub struct PostgresRepository<O, E>
+pub struct PostgresRepository<T, O, E>
 where
-    O: SideEffectStorage<E::Error> + Clone,
-    E: EncryptionProvider + Clone,
+    T: Clone,
+    O: Clone,
+    E: Clone,
 {
     pub(crate) inner: Pool<Postgres>,
     pub(crate) outbox: O,
     pub(crate) tables: TableRegistry,
     encryption_provider: E,
+    phantom_side_effect: std::marker::PhantomData<T>,
 }
 
-impl<O, E> PostgresRepository<O, E>
+impl<T, O, E> PostgresRepository<T, O, E>
 where
-    O: SideEffectStorage<E::Error> + Clone,
+    T: Aggregate + Clone,
+    T::SideEffect: SideEffect<SideEffectId = Uuid> + Pickle + Send + Sync,
+    O: SideEffectStorage<E::Error, T::SideEffect> + Clone,
     E: EncryptionProvider + Clone,
 {
     /// Creates a new PostgreSQL repository with the specified connection and pool options.
@@ -59,6 +65,7 @@ where
             outbox,
             tables,
             encryption_provider,
+            phantom_side_effect: PhantomData::default(),
         })
     }
 
@@ -66,12 +73,13 @@ where
     ///
     /// The returned transaction can be used to perform multiple operations
     /// atomically and provides access to the repository methods.
-    pub async fn begin_transaction(&self) -> Result<PostgresTransaction<'_, O, E>, sqlx::Error> {
+    pub async fn begin_transaction(&self) -> Result<PostgresTransaction<'_, T, O, E>, sqlx::Error> {
         Ok(PostgresTransaction {
             inner: self.inner.begin().await?,
             outbox: &self.outbox,
             tables: &self.tables,
             encryption_provider: &self.encryption_provider,
+            phantom_side_effect: PhantomData::default(),
         })
     }
 
@@ -88,13 +96,13 @@ where
 }
 
 #[async_trait]
-impl<O, T, E> RepositoryReader<T> for PostgresRepository<O, E>
+impl<T, O, E> RepositoryReader<T> for PostgresRepository<T, O, E>
 where
     T: Aggregate<AggregateId = Uuid> + Pickle + Send + Sync + 'static,
     T::DomainEvent: DomainEvent<EventId = Uuid> + Pickle + Send + Sync,
     T::SideEffect: SideEffect<SideEffectId = Uuid> + Pickle + Send + Sync,
     T::ApplyError: Send + Sync,
-    O: SideEffectStorage<E::Error> + Clone + Send + Sync,
+    O: SideEffectStorage<E::Error, T::SideEffect> + Clone + Send + Sync,
     E: EncryptionProvider + Clone + Send + Sync,
 {
     type DbError = DbError<E::Error>;
@@ -162,13 +170,13 @@ where
 }
 
 #[async_trait]
-impl<O, T, E> Repository<T> for PostgresRepository<O, E>
+impl<T, O, E> Repository<T> for PostgresRepository<T, O, E>
 where
     T: Aggregate<AggregateId = Uuid> + Pickle + Send + Sync + 'static,
     T::DomainEvent: DomainEvent<EventId = Uuid> + Pickle + Send + Sync,
     T::SideEffect: eventastic::aggregate::SideEffect<SideEffectId = Uuid> + Pickle + Send + Sync,
     T::ApplyError: Send + Sync,
-    O: SideEffectStorage<E::Error> + Clone + Send + Sync,
+    O: SideEffectStorage<E::Error, T::SideEffect> + Clone + Send + Sync,
     E: EncryptionProvider + Clone + Send + Sync,
 {
     type Error = RepositoryError<
