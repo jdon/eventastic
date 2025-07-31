@@ -23,8 +23,8 @@ use sqlx::{
 #[derive(Clone)]
 pub struct PostgresRepository<O, E>
 where
-    O: SideEffectStorage + Clone,
-    E: Clone,
+    O: SideEffectStorage<E::Error> + Clone,
+    E: EncryptionProvider + Clone,
 {
     pub(crate) inner: Pool<Postgres>,
     pub(crate) outbox: O,
@@ -34,7 +34,7 @@ where
 
 impl<O, E> PostgresRepository<O, E>
 where
-    O: SideEffectStorage + Clone,
+    O: SideEffectStorage<E::Error> + Clone,
     E: EncryptionProvider + Clone,
 {
     /// Creates a new PostgreSQL repository with the specified connection and pool options.
@@ -94,10 +94,10 @@ where
     T::DomainEvent: DomainEvent<EventId = Uuid> + Pickle + Send + Sync,
     T::SideEffect: SideEffect<SideEffectId = Uuid> + Pickle + Send + Sync,
     T::ApplyError: Send + Sync,
-    O: SideEffectStorage + Clone + Send + Sync,
+    O: SideEffectStorage<E::Error> + Clone + Send + Sync,
     E: EncryptionProvider + Clone + Send + Sync,
 {
-    type DbError = DbError;
+    type DbError = DbError<E::Error>;
 
     /// Returns a stream of domain events.
     fn stream_from(
@@ -168,13 +168,13 @@ where
     T::DomainEvent: DomainEvent<EventId = Uuid> + Pickle + Send + Sync,
     T::SideEffect: eventastic::aggregate::SideEffect<SideEffectId = Uuid> + Pickle + Send + Sync,
     T::ApplyError: Send + Sync,
-    O: SideEffectStorage + Clone + Send + Sync,
+    O: SideEffectStorage<E::Error> + Clone + Send + Sync,
     E: EncryptionProvider + Clone + Send + Sync,
 {
     type Error = RepositoryError<
         T::ApplyError,
         <<T as Aggregate>::DomainEvent as DomainEvent>::EventId,
-        DbError,
+        DbError<E::Error>,
     >;
 
     /// Loads an aggregate from the repository by its ID.

@@ -11,7 +11,7 @@ use sqlx::{Postgres, Transaction};
 /// different implementations such as direct table storage or outbox patterns.
 /// Implementors define how side effects are persisted within a database transaction.
 #[async_trait]
-pub trait SideEffectStorage: Send + Sync {
+pub trait SideEffectStorage<E>: Send + Sync {
     /// Store a collection of side effects within the given database transaction.
     ///
     /// This method is called as part of the aggregate save process to ensure
@@ -29,5 +29,5 @@ pub trait SideEffectStorage: Send + Sync {
         &self,
         transaction: &mut Transaction<'_, Postgres>,
         items: Vec<T>,
-    ) -> Result<(), DbError>;
+    ) -> Result<(), DbError<E>>;
 }

@@ -1,4 +1,4 @@
-use anyhow::{Context, anyhow};
+use anyhow::Context;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use eventastic::aggregate::SideEffect;
@@ -26,12 +26,12 @@ impl<E> TableOutbox<E> {
 }
 
 #[async_trait]
-impl<E: EncryptionProvider + Send + Sync + 'static> SideEffectStorage for TableOutbox<E> {
+impl<E: EncryptionProvider + Send + Sync + 'static> SideEffectStorage<E::Error> for TableOutbox<E> {
     async fn store_side_effects<T: SideEffect<SideEffectId = Uuid> + Pickle + Send + Sync>(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
         items: Vec<T>,
-    ) -> Result<(), DbError> {
+    ) -> Result<(), DbError<E::Error>> {
         let mut ids: Vec<Uuid> = Vec::with_capacity(items.len());
         let mut messages: Vec<Vec<u8>> = Vec::with_capacity(items.len());
         let mut retries: Vec<i32> = Vec::with_capacity(items.len());
@@ -57,12 +57,9 @@ impl<E: EncryptionProvider + Send + Sync + 'static> SideEffectStorage for TableO
                 .encryption_provider
                 .encrypt(plain)
                 .await
-                .context("Failed to encrypt side effects")
                 .map_err(DbError::Encryption)?;
             if number_of_items != cipher.len() {
-                return Err(DbError::Encryption(anyhow!(
-                    "Encrypting side effects returned wrong number of items"
-                )));
+                return Err(DbError::EncrypytionProviderReturnedWrongNumberOfItems);
             }
             messages.append(&mut cipher);
         }
@@ -89,22 +86,22 @@ impl<E: EncryptionProvider + Send + Sync + 'static> SideEffectStorage for TableO
 }
 
 #[async_trait]
-pub trait TransactionOutboxExt<T>
+pub trait TransactionOutboxExt<T, E>
 where
     T: SideEffect + Pickle + Send + 'static,
     T::SideEffectId: Clone + Send + 'static,
     for<'sql> T::SideEffectId:
         sqlx::Decode<'sql, Postgres> + sqlx::Type<Postgres> + sqlx::Encode<'sql, Postgres> + Unpin,
 {
-    async fn get_outbox_batch(&mut self) -> Result<Vec<OutboxMessage<T>>, DbError>;
+    async fn get_outbox_batch(&mut self) -> Result<Vec<OutboxMessage<T>>, DbError<E>>;
 
-    async fn delete_outbox_item(&mut self, id: T::SideEffectId) -> Result<(), DbError>;
+    async fn delete_outbox_item(&mut self, id: T::SideEffectId) -> Result<(), DbError<E>>;
 
-    async fn update_outbox_item(&mut self, item: OutboxMessage<T>) -> Result<(), DbError>;
+    async fn update_outbox_item(&mut self, item: OutboxMessage<T>) -> Result<(), DbError<E>>;
 }
 
 #[async_trait]
-impl<T, E> TransactionOutboxExt<T> for PostgresTransaction<'_, TableOutbox<E>, E>
+impl<T, E> TransactionOutboxExt<T, E::Error> for PostgresTransaction<'_, TableOutbox<E>, E>
 where
     T: SideEffect + Pickle + Send + 'static,
     T::SideEffectId: Clone + Send + 'static,
@@ -112,7 +109,7 @@ where
         sqlx::Decode<'sql, Postgres> + sqlx::Type<Postgres> + sqlx::Encode<'sql, Postgres> + Unpin,
     E: EncryptionProvider + Send + Sync + 'static,
 {
-    async fn get_outbox_batch(&mut self) -> Result<Vec<OutboxMessage<T>>, DbError> {
+    async fn get_outbox_batch(&mut self) -> Result<Vec<OutboxMessage<T>>, DbError<E::Error>> {
         #[derive(sqlx::FromRow)]
         struct OutboxRow {
             message: Vec<u8>,
@@ -130,18 +127,15 @@ where
 
         let mut messages = Vec::with_capacity(rows.len());
         for chunk in rows.chunks(self.encryption_provider().max_batch_size()) {
-            let cipher: Vec<_> = chunk.into_iter().map(|row| row.message.clone()).collect();
+            let cipher: Vec<_> = chunk.iter().map(|row| row.message.clone()).collect();
             let number_of_items = cipher.len();
             let mut plain = self
                 .encryption_provider()
                 .decrypt(cipher)
                 .await
-                .context("Failed to decrypt side effects")
                 .map_err(DbError::Encryption)?;
             if plain.len() != number_of_items {
-                return Err(DbError::Encryption(anyhow!(
-                    "Decrypting side effects returned wrong number of items"
-                )));
+                return Err(DbError::EncrypytionProviderReturnedWrongNumberOfItems);
             }
             messages.append(&mut plain);
         }
@@ -156,7 +150,7 @@ where
             .map_err(DbError::PicklingError)
     }
 
-    async fn delete_outbox_item(&mut self, id: T::SideEffectId) -> Result<(), DbError> {
+    async fn delete_outbox_item(&mut self, id: T::SideEffectId) -> Result<(), DbError<E::Error>> {
         sqlx::query("DELETE FROM outbox WHERE id = $1")
             .bind(id)
             .execute(self.inner_mut().as_mut())
@@ -164,7 +158,10 @@ where
         Ok(())
     }
 
-    async fn update_outbox_item(&mut self, item: OutboxMessage<T>) -> Result<(), DbError> {
+    async fn update_outbox_item(
+        &mut self,
+        item: OutboxMessage<T>,
+    ) -> Result<(), DbError<E::Error>> {
         sqlx::query("UPDATE outbox SET retries = $2, requeue = $3 WHERE id = $1")
             .bind(item.message.id())
             .bind(i32::from(item.retries))
@@ -214,12 +211,12 @@ pub trait SideEffectHandler {
 
 /// Extension trait for running the outbox worker using a [`TableOutbox`].
 #[async_trait]
-pub trait RepositoryOutboxExt {
+pub trait RepositoryOutboxExt<E> {
     async fn start_outbox<T, H>(
         &self,
         handler: H,
         poll_interval: std::time::Duration,
-    ) -> Result<(), DbError>
+    ) -> Result<(), DbError<E>>
     where
         T: SideEffect + Pickle + Send + Sync + 'static,
         T::SideEffectId: Clone + Send + 'static,
@@ -231,7 +228,7 @@ pub trait RepositoryOutboxExt {
 }
 
 #[async_trait]
-impl<E> RepositoryOutboxExt for PostgresRepository<TableOutbox<E>, E>
+impl<E> RepositoryOutboxExt<E::Error> for PostgresRepository<TableOutbox<E>, E>
 where
     E: EncryptionProvider + Clone + Send + Sync + 'static,
 {
@@ -239,7 +236,7 @@ where
         &self,
         handler: H,
         poll_interval: std::time::Duration,
-    ) -> Result<(), DbError>
+    ) -> Result<(), DbError<E::Error>>
     where
         T: SideEffect + Pickle + Send + Sync + 'static,
         T::SideEffectId: Clone + Send + 'static,
@@ -261,13 +258,13 @@ where
 async fn process_outbox_batch<T, H, E>(
     repo: &PostgresRepository<TableOutbox<E>, E>,
     handler: Arc<H>,
-) -> Result<(), DbError>
+) -> Result<(), DbError<E::Error>>
 where
     T: SideEffect + Pickle + Send + Sync + 'static,
     T::SideEffectId: Clone + Send + 'static,
     H: SideEffectHandler<SideEffect = T> + Send + Sync,
     E: EncryptionProvider + Clone + Send + Sync + 'static,
-    for<'a> PostgresTransaction<'a, TableOutbox<E>, E>: TransactionOutboxExt<T>,
+    for<'a> PostgresTransaction<'a, TableOutbox<E>, E>: TransactionOutboxExt<T, E::Error>,
     for<'sql> T::SideEffectId:
         sqlx::Decode<'sql, Postgres> + sqlx::Type<Postgres> + sqlx::Encode<'sql, Postgres> + Unpin,
 {

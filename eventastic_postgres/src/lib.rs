@@ -7,7 +7,7 @@ mod side_effect;
 mod table_registry;
 mod transaction;
 
-pub use encryption::{EncryptionProvider, NoEncryption};
+pub use encryption::{EncryptionProvider, NoEncryption, NoEncryptionError};
 pub use pickle::Pickle;
 pub use repository::PostgresRepository;
 pub use side_effect::SideEffectStorage;
@@ -25,7 +25,7 @@ use thiserror::Error;
 
 /// Errors that can occur during PostgreSQL operations.
 #[derive(Error, Debug)]
-pub enum DbError {
+pub enum DbError<E> {
     /// A database operation failed.
     #[error("DB Error {0}")]
     DbError(sqlx::Error),
@@ -46,10 +46,13 @@ pub enum DbError {
     UnregisteredAggregate,
     /// Failed to encrypt or decrypt data.
     #[error("Encryption Error {0}")]
-    Encryption(anyhow::Error),
+    Encryption(E),
+    /// Failed to encrypt or decrypt data.
+    #[error("Encryption provider returned wrong number of items")]
+    EncrypytionProviderReturnedWrongNumberOfItems,
 }
 
-impl From<sqlx::Error> for DbError {
+impl<E> From<sqlx::Error> for DbError<E> {
     fn from(e: sqlx::Error) -> Self {
         if let Some(db_error) = e.as_database_error() {
             if let Some(code) = db_error.code() {
@@ -73,7 +76,7 @@ where
     <T as Aggregate>::DomainEvent: DomainEvent<EventId = Uuid> + Pickle + Send + Sync,
     <T as Aggregate>::SideEffect: SideEffect<SideEffectId = Uuid> + Pickle + Send + Sync,
     <T as Aggregate>::ApplyError: Send + Sync,
-    O: SideEffectStorage + Send + Sync,
+    O: SideEffectStorage<E::Error> + Send + Sync,
     E: EncryptionProvider + Clone + Send + Sync,
 {
     /// Loads an aggregate from PostgreSQL storage by its UUID using an existing transaction.
@@ -88,7 +91,7 @@ where
         RepositoryError<
             T::ApplyError,
             <<T as Aggregate>::DomainEvent as DomainEvent>::EventId,
-            DbError,
+            DbError<E::Error>,
         >,
     > {
         Context::load(transaction, &aggregate_id).await
@@ -106,7 +109,7 @@ where
         RepositoryError<
             T::ApplyError,
             <<T as Aggregate>::DomainEvent as DomainEvent>::EventId,
-            DbError,
+            DbError<E::Error>,
         >,
     >
     where
@@ -122,7 +125,7 @@ where
     <T as Aggregate>::DomainEvent: DomainEvent<EventId = Uuid> + Pickle + Send + Sync,
     <T as Aggregate>::SideEffect: SideEffect<SideEffectId = Uuid> + Pickle + Send + Sync,
     <T as Aggregate>::ApplyError: Send + Sync,
-    O: SideEffectStorage + Send + Sync,
+    O: SideEffectStorage<E::Error> + Send + Sync,
     E: EncryptionProvider + Clone + Send + Sync,
 {
 }

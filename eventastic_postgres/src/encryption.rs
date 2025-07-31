@@ -35,7 +35,7 @@ impl EncryptionProvider for NoEncryption {
     }
 
     fn max_batch_size(&self) -> usize {
-        1
+        100
     }
 }
 

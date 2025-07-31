@@ -37,7 +37,7 @@ impl PartialEventRow {
     ///
     /// Returns [`DbError::InvalidVersionNumber`] if the version cannot be converted to u64.
     /// Returns [`DbError::PicklingError`] if the event JSON cannot be deserialized.
-    pub fn to_event<Evt>(row: PartialEventRow) -> Result<EventStoreEvent<Evt>, DbError>
+    pub fn to_event<Evt, E>(row: PartialEventRow) -> Result<EventStoreEvent<Evt>, DbError<E>>
     where
         Evt: DomainEvent<EventId = Uuid> + Pickle,
     {
@@ -81,7 +81,7 @@ impl PartialSnapshotRow {
     /// Returns [`DbError::InvalidVersionNumber`] if the version cannot be converted to u64.
     /// Returns [`DbError::InvalidSnapshotVersion`] if the snapshot version cannot be converted to u64.
     /// Returns [`DbError::PicklingError`] if the aggregate JSON cannot be deserialized.
-    pub fn to_snapshot<T>(row: PartialSnapshotRow) -> Result<Snapshot<T>, DbError>
+    pub fn to_snapshot<T, E>(row: PartialSnapshotRow) -> Result<Snapshot<T>, DbError<E>>
     where
         T: Aggregate + Pickle,
     {
@@ -109,7 +109,7 @@ pub(crate) mod utils {
     /// # Errors
     ///
     /// Returns [`DbError::InvalidVersionNumber`] if the conversion fails.
-    pub fn version_to_i64(version: u64) -> Result<i64, DbError> {
+    pub fn version_to_i64<E>(version: u64) -> Result<i64, DbError<E>> {
         i64::try_from(version).map_err(|_| DbError::InvalidVersionNumber)
     }
 
@@ -118,7 +118,7 @@ pub(crate) mod utils {
     /// # Errors
     ///
     /// Returns [`DbError::InvalidSnapshotVersion`] if the conversion fails.
-    pub fn snapshot_version_to_i64(version: u64) -> Result<i64, DbError> {
+    pub fn snapshot_version_to_i64<E>(version: u64) -> Result<i64, DbError<E>> {
         i64::try_from(version).map_err(|_| DbError::InvalidSnapshotVersion)
     }
 }

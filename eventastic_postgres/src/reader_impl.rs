@@ -9,7 +9,6 @@ use std::sync::Arc;
 use crate::common::{PartialEventRow, PartialSnapshotRow, utils};
 use crate::pickle::Pickle;
 use crate::{DbError, EncryptionProvider};
-use anyhow::{Context, anyhow};
 use eventastic::aggregate::Aggregate;
 use eventastic::event::DomainEvent;
 use eventastic::event::EventStoreEvent;
@@ -25,7 +24,9 @@ pub fn stream_from<'e, 'c: 'e, E, T, EP>(
     version: u64,
     query: Arc<str>,
     encryption_provider: &'e EP,
-) -> impl futures::Stream<Item = std::result::Result<EventStoreEvent<T::DomainEvent>, DbError>> + 'e
+) -> impl futures::Stream<
+    Item = std::result::Result<EventStoreEvent<T::DomainEvent>, DbError<EP::Error>>,
+> + 'e
 where
     E: Executor<'c, Database = sqlx::Postgres> + 'e,
     T: Aggregate<AggregateId = Uuid>,
@@ -34,7 +35,7 @@ where
 {
     let id = *id;
 
-    Box::pin(async_stream::stream! {
+    async_stream::stream! {
         let version = utils::version_to_i64(version)?;
 
         let chunks = query_as::<_, PartialEventRow>(&query)
@@ -45,24 +46,22 @@ where
 
         for await chunk in chunks {
             let chunk = chunk.into_iter().collect::<Result<Vec<_>, _>>()?;
+            // TODO: We could have the query return a vector of events rather than doing this here.
             let cipher: Vec<_> = chunk.iter().map(|row| row.event.clone()).collect();
             let number_of_items = cipher.len();
             let plain = encryption_provider
                 .decrypt(cipher)
                 .await
-                .context("Decryption error")
                 .map_err(DbError::Encryption)?;
             if plain.len() != number_of_items {
-                Err(DbError::Encryption(anyhow!(
-                    "Decrypting events returned wrong number of items"
-                )))?;
+                Err(DbError::EncrypytionProviderReturnedWrongNumberOfItems)?;
             }
             for (mut row, plain) in chunk.into_iter().zip(plain.into_iter()) {
                 row.event = plain;
                 yield PartialEventRow::to_event(row);
             }
         }
-    })
+    }
 }
 
 /// Generic implementation for getting an event by ID from configured table.
@@ -72,7 +71,7 @@ pub async fn get_event<'c, E, T, EP>(
     event_id: &<<T as Aggregate>::DomainEvent as DomainEvent>::EventId,
     query: &str,
     encryption_provider: &EP,
-) -> Result<Option<EventStoreEvent<<T as Aggregate>::DomainEvent>>, DbError>
+) -> Result<Option<EventStoreEvent<<T as Aggregate>::DomainEvent>>, DbError<EP::Error>>
 where
     E: Executor<'c, Database = sqlx::Postgres>,
     T: Aggregate<AggregateId = Uuid>,
@@ -87,21 +86,19 @@ where
     else {
         return Ok(None);
     };
-    let plain = encryption_provider
+    let mut plain = encryption_provider
         .decrypt(vec![row.event])
         .await
-        .context("Failed to decrypt event")
-        .map_err(DbError::Encryption)?;
-    if plain.len() != 1 {
-        Err(DbError::Encryption(anyhow!(
-            "Decrypting event returned wrong number of items"
-        )))?;
+        .map_err(DbError::Encryption)?
+        .into_iter();
+    let Some(event) = plain.next() else {
+        return Err(DbError::EncrypytionProviderReturnedWrongNumberOfItems);
+    };
+    if plain.next().is_some() {
+        return Err(DbError::EncrypytionProviderReturnedWrongNumberOfItems);
     }
-    row.event = plain
-        .into_iter()
-        .next()
-        .expect("Decrypt must return 1 item for event");
-    return Ok(Some(PartialEventRow::to_event(row)?));
+    row.event = event;
+    Ok(Some(PartialEventRow::to_event(row)?))
 }
 
 /// Generic implementation for getting a snapshot from configured table.
@@ -110,7 +107,7 @@ pub async fn get_snapshot<'c, E, T, EP>(
     id: &T::AggregateId,
     query: &str,
     encryption_provider: &EP,
-) -> Result<Option<Snapshot<T>>, DbError>
+) -> Result<Option<Snapshot<T>>, DbError<EP::Error>>
 where
     E: Executor<'c, Database = sqlx::Postgres>,
     T: Aggregate<AggregateId = Uuid> + Pickle,
@@ -129,12 +126,9 @@ where
     let plain = encryption_provider
         .decrypt(vec![row.aggregate.clone()])
         .await
-        .context("Failed to decrypt snapshot")
         .map_err(DbError::Encryption)?;
     if plain.len() != 1 {
-        Err(DbError::Encryption(anyhow!(
-            "Decrypting snapshot returned wrong number of items"
-        )))?;
+        Err(DbError::EncrypytionProviderReturnedWrongNumberOfItems)?;
     }
     row.aggregate = plain
         .into_iter()

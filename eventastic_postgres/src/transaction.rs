@@ -2,7 +2,6 @@ use crate::common::utils;
 use crate::pickle::Pickle;
 use crate::{DbError, EncryptionProvider, SideEffectStorage, TableRegistry, reader_impl};
 use anyhow::Context as _;
-use anyhow::anyhow;
 use async_trait::async_trait;
 use chrono::DateTime;
 use chrono::Utc;
@@ -24,7 +23,8 @@ use sqlx::{Postgres, Transaction};
 /// operations. It manages database transactions and integrates with side effect storage.
 pub struct PostgresTransaction<'a, O, E>
 where
-    O: SideEffectStorage,
+    O: SideEffectStorage<E::Error>,
+    E: EncryptionProvider,
 {
     pub(crate) inner: Transaction<'a, Postgres>,
     pub(crate) outbox: &'a O,
@@ -34,14 +34,14 @@ where
 
 impl<'a, O, E> PostgresTransaction<'a, O, E>
 where
-    O: SideEffectStorage,
+    O: SideEffectStorage<E::Error>,
     E: EncryptionProvider + Send + Sync + 'static,
 {
     /// Commit the transaction to the database.
     ///
     /// This finalizes all operations performed within this transaction,
     /// making them permanently visible to other database connections.
-    pub async fn commit(self) -> Result<(), DbError> {
+    pub async fn commit(self) -> Result<(), DbError<E::Error>> {
         Ok(self.inner.commit().await?)
     }
 
@@ -49,7 +49,7 @@ where
     ///
     /// This undoes all operations performed within this transaction,
     /// returning the database to its state before the transaction began.
-    pub async fn rollback(self) -> Result<(), DbError> {
+    pub async fn rollback(self) -> Result<(), DbError<E::Error>> {
         Ok(self.inner.rollback().await?)
     }
 
@@ -67,7 +67,7 @@ where
     pub async fn get<T>(
         &mut self,
         id: &Uuid,
-    ) -> Result<Context<T>, RepositoryError<T::ApplyError, Uuid, DbError>>
+    ) -> Result<Context<T>, RepositoryError<T::ApplyError, Uuid, DbError<E::Error>>>
     where
         T: Aggregate<AggregateId = Uuid> + 'static + Send + Sync + Pickle,
         T::DomainEvent: DomainEvent<EventId = Uuid> + Pickle + Send + Sync,
@@ -81,7 +81,7 @@ where
     pub async fn store<T>(
         &mut self,
         aggregate: &mut Context<T>,
-    ) -> Result<(), SaveError<T, DbError>>
+    ) -> Result<(), SaveError<T, DbError<E::Error>>>
     where
         T: Aggregate<AggregateId = Uuid> + 'static + Send + Sync + Pickle,
         T::DomainEvent: DomainEvent<EventId = Uuid> + Pickle + Send + Sync,
@@ -92,7 +92,7 @@ where
     }
 
     pub fn encryption_provider(&self) -> &E {
-        &self.encryption_provider
+        self.encryption_provider
     }
 }
 
@@ -103,10 +103,10 @@ where
     T::SideEffect: SideEffect<SideEffectId = Uuid> + Pickle + Send + Sync,
     T::DomainEvent: DomainEvent<EventId = Uuid> + Pickle + Send + Sync,
     T::ApplyError: Send + Sync,
-    O: SideEffectStorage,
+    O: SideEffectStorage<E::Error>,
     E: EncryptionProvider + Send + Sync,
 {
-    type DbError = DbError;
+    type DbError = DbError<E::Error>;
 
     /// Returns a stream of domain events.
     fn stream_from(
@@ -177,7 +177,7 @@ where
     T::SideEffect: SideEffect<SideEffectId = Uuid> + Pickle + Send + Sync,
     T::DomainEvent: DomainEvent<EventId = Uuid> + Pickle + Send + Sync,
     T::ApplyError: Send + Sync,
-    O: SideEffectStorage,
+    O: SideEffectStorage<E::Error>,
     E: EncryptionProvider + Send + Sync,
 {
     /// Stores new domain events to the database
@@ -218,12 +218,9 @@ where
                 .encryption_provider
                 .encrypt(plain)
                 .await
-                .context("Failed to encrypt events")
                 .map_err(DbError::Encryption)?;
             if cipher.len() != number_of_items {
-                return Err(DbError::Encryption(anyhow!(
-                    "Encrypting events returned wrong number of items"
-                )));
+                return Err(DbError::EncrypytionProviderReturnedWrongNumberOfItems);
             }
             events_to_insert.append(&mut cipher);
         }
@@ -256,21 +253,18 @@ where
             .pickle()
             .context("Failed to pickle aggregate")
             .map_err(DbError::PicklingError)?;
-        let cipher = self
+        let mut cipher = self
             .encryption_provider
             .encrypt(vec![aggregate])
             .await
-            .context("Failed to encrypt snapshot")
-            .map_err(DbError::Encryption)?;
-        if cipher.len() != 1 {
-            return Err(DbError::Encryption(anyhow!(
-                "Encrypting snapshot returned wrong number of items"
-            )));
+            .map_err(DbError::Encryption)?
+            .into_iter();
+        let Some(aggregate) = cipher.next() else {
+            return Err(DbError::EncrypytionProviderReturnedWrongNumberOfItems);
+        };
+        if cipher.next().is_some() {
+            return Err(DbError::EncrypytionProviderReturnedWrongNumberOfItems);
         }
-        let aggregate = cipher
-            .into_iter()
-            .next()
-            .expect("Must have encrypted snapshot");
 
         let upsert_query = self
             .tables
