@@ -26,7 +26,7 @@ pub struct PostgresTransaction<'a, T, O, E> {
     pub(crate) outbox: &'a O,
     pub(crate) tables: &'a TableRegistry,
     pub(crate) encryption_provider: &'a E,
-    pub(crate) phantom_side_effect: std::marker::PhantomData<T>,
+    pub(crate) phantom_aggregate: std::marker::PhantomData<T>,
 }
 
 impl<'a, T, O, E> PostgresTransaction<'a, T, O, E>

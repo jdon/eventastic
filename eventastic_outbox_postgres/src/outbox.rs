@@ -110,8 +110,6 @@ impl<T, E> TransactionOutboxExt<T::SideEffect, E::Error>
     for PostgresTransaction<'_, T, TableOutbox<E>, E>
 where
     T: Aggregate<AggregateId = Uuid> + Send + Sync + Pickle + 'static,
-    T::SideEffect: SideEffect + Pickle + Clone + Send + Sync + 'static,
-    <T::SideEffect as SideEffect>::SideEffectId: Clone + Send + 'static,
     T::SideEffect: SideEffect<SideEffectId = Uuid> + Pickle + Send + Sync,
     T::DomainEvent: DomainEvent<EventId = Uuid> + Pickle + Send + Sync,
     T::ApplyError: Send + Sync,
@@ -296,7 +294,7 @@ where
     let outbox_items: Vec<OutboxMessage<T::SideEffect>> = tx.get_outbox_batch().await?;
 
     for mut item in outbox_items {
-        let id: <T::SideEffect as SideEffect>::SideEffectId = item.message.id().clone();
+        let id: <T::SideEffect as SideEffect>::SideEffectId = *item.message.id();
 
         match handler.handle(&item.message, item.retries).await {
             Ok(()) => {

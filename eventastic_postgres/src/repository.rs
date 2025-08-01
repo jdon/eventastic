@@ -33,7 +33,7 @@ where
     pub(crate) outbox: O,
     pub(crate) tables: TableRegistry,
     encryption_provider: E,
-    phantom_side_effect: std::marker::PhantomData<T>,
+    phantom_aggregate: std::marker::PhantomData<T>,
 }
 
 impl<T, O, E> PostgresRepository<T, O, E>
@@ -65,7 +65,7 @@ where
             outbox,
             tables,
             encryption_provider,
-            phantom_side_effect: PhantomData::default(),
+            phantom_aggregate: PhantomData,
         })
     }
 
@@ -79,7 +79,7 @@ where
             outbox: &self.outbox,
             tables: &self.tables,
             encryption_provider: &self.encryption_provider,
-            phantom_side_effect: PhantomData::default(),
+            phantom_aggregate: PhantomData,
         })
     }
 
