@@ -7,12 +7,11 @@ edition = "2024"
 
 [dependencies]
 eventastic = { path = "../../eventastic" }
-eventastic_postgres = { path = "../../eventastic_postgres" }
+eventastic_postgres = { path = "../../eventastic_postgres", features = ["serde"] }
 eventastic_outbox_postgres = { path = "../../eventastic_outbox_postgres" }
 thiserror = { workspace = true }
 uuid = { workspace = true }
 tokio = { workspace = true }
 sqlx = { workspace = true }
-anyhow = { workspace = true }
 serde = { workspace = true }
 async-trait = { workspace = true }

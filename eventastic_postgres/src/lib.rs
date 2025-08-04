@@ -1,18 +1,22 @@
 mod common;
 mod encryption;
+mod error;
 mod pickle;
 mod reader_impl;
 mod repository;
 mod side_effect;
-mod table_registry;
+mod table_config;
 mod transaction;
 
 pub use encryption::{EncryptionProvider, NoEncryption, NoEncryptionError};
+pub use error::{DbError, SideEffectDbError};
 pub use pickle::Pickle;
 pub use repository::PostgresRepository;
 pub use side_effect::SideEffectStorage;
-pub use table_registry::{TableConfig, TableRegistry, TableRegistryBuilder};
+pub use table_config::TableConfig;
 pub use transaction::PostgresTransaction;
+
+use crate::error::EventSourcingDbError;
 
 use async_trait::async_trait;
 use eventastic::{
@@ -21,49 +25,6 @@ use eventastic::{
     repository::{Repository, RepositoryError},
 };
 use sqlx::types::Uuid;
-use thiserror::Error;
-
-/// Errors that can occur during PostgreSQL operations.
-#[derive(Error, Debug)]
-pub enum DbError<E> {
-    /// A database operation failed.
-    #[error("DB Error {0}")]
-    DbError(sqlx::Error),
-    /// Failed to pickle data.
-    #[error("Pickling Error {0}")]
-    PicklingError(anyhow::Error),
-    /// An invalid version number was encountered (e.g., negative value where positive expected).
-    #[error("Invalid Version Number")]
-    InvalidVersionNumber,
-    /// An invalid snapshot version number was encountered.
-    #[error("Invalid Snapshot Version Number")]
-    InvalidSnapshotVersion,
-    /// A concurrent modification was detected (optimistic locking failure).
-    #[error("Optimistic Concurrency Error")]
-    OptimisticConcurrencyError,
-    /// An aggregate type was not registered in the table registry.
-    #[error("Aggregate type not registered in table registry")]
-    UnregisteredAggregate,
-    /// Failed to encrypt or decrypt data.
-    #[error("Encryption Error {0}")]
-    Encryption(E),
-    /// Failed to encrypt or decrypt data.
-    #[error("Encryption provider returned wrong number of items")]
-    EncrypytionProviderReturnedWrongNumberOfItems,
-}
-
-impl<E> From<sqlx::Error> for DbError<E> {
-    fn from(e: sqlx::Error) -> Self {
-        if let Some(db_error) = e.as_database_error() {
-            if let Some(code) = db_error.code() {
-                if code == "23505" && db_error.message().contains("aggregate_version") {
-                    return DbError::OptimisticConcurrencyError;
-                }
-            }
-        }
-        DbError::DbError(e)
-    }
-}
 
 /// Extension trait for loading aggregates from PostgreSQL storage.
 ///
@@ -91,7 +52,7 @@ where
         RepositoryError<
             T::ApplyError,
             <<T as Aggregate>::DomainEvent as DomainEvent>::EventId,
-            DbError<E::Error>,
+            EventSourcingDbError<E, T>,
         >,
     > {
         Context::load(transaction, &aggregate_id).await
@@ -109,7 +70,7 @@ where
         RepositoryError<
             T::ApplyError,
             <<T as Aggregate>::DomainEvent as DomainEvent>::EventId,
-            DbError<E::Error>,
+            EventSourcingDbError<E, T>,
         >,
     >
     where

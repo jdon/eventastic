@@ -426,7 +426,7 @@ mod tests {
         assert_eq!(context.version(), 0);
 
         for i in 1..=5 {
-            let add_event = create_add_event(&format!("add-{}", i), i);
+            let add_event = create_add_event(&format!("add-{i}"), i);
             context.record_that(add_event).unwrap();
             assert_eq!(context.version(), i as u64);
         }

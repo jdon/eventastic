@@ -870,7 +870,7 @@ mod tests {
 
         // Verify side effects were stored
         // Reset: 2 side effects, Add: 1, Subtract: 1, Multiply: 0, Add: 1 = 5 total
-        let expected_side_effects = 2 + 1 + 1 + 0 + 1;
+        let expected_side_effects = 5;
         assert_eq!(repository.side_effects_count(), expected_side_effects);
 
         let side_effects = repository.get_all_side_effects();

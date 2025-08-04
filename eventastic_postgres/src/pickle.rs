@@ -13,6 +13,7 @@ pub trait Pickle: Sized {
     fn unpickle(bytes: &[u8]) -> Result<Self, Self::Error>;
 }
 
+#[cfg(feature = "serde")]
 impl<T> Pickle for T
 where
     T: serde::Serialize + serde::de::DeserializeOwned,

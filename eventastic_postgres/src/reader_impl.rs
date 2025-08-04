@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use crate::common::{PartialEventRow, PartialSnapshotRow, utils};
 use crate::pickle::Pickle;
-use crate::{DbError, EncryptionProvider};
+use crate::{DbError, EncryptionProvider, EventSourcingDbError};
 use eventastic::aggregate::Aggregate;
 use eventastic::event::DomainEvent;
 use eventastic::event::EventStoreEvent;
@@ -25,12 +25,13 @@ pub fn stream_from<'e, 'c: 'e, E, T, EP>(
     query: Arc<str>,
     encryption_provider: &'e EP,
 ) -> impl futures::Stream<
-    Item = std::result::Result<EventStoreEvent<T::DomainEvent>, DbError<EP::Error>>,
+    Item = std::result::Result<EventStoreEvent<T::DomainEvent>, EventSourcingDbError<EP, T>>,
 > + 'e
 where
     E: Executor<'c, Database = sqlx::Postgres> + 'e,
-    T: Aggregate<AggregateId = Uuid>,
+    T: Aggregate<AggregateId = Uuid> + Pickle,
     T::DomainEvent: DomainEvent<EventId = Uuid> + Pickle + Send + 'e,
+    T::SideEffect: Pickle,
     EP: EncryptionProvider + Sync + Send + 'e,
 {
     let id = *id;
@@ -54,11 +55,11 @@ where
                 .await
                 .map_err(DbError::Encryption)?;
             if plain.len() != number_of_items {
-                Err(DbError::EncrypytionProviderReturnedWrongNumberOfItems)?;
+                Err(DbError::EncryptionProviderReturnedWrongNumberOfItems)?;
             }
             for (mut row, plain) in chunk.into_iter().zip(plain.into_iter()) {
                 row.event = plain;
-                yield PartialEventRow::to_event(row);
+                yield PartialEventRow::to_event::<T, EP::Error>(row);
             }
         }
     }
@@ -71,11 +72,12 @@ pub async fn get_event<'c, E, T, EP>(
     event_id: &<<T as Aggregate>::DomainEvent as DomainEvent>::EventId,
     query: &str,
     encryption_provider: &EP,
-) -> Result<Option<EventStoreEvent<<T as Aggregate>::DomainEvent>>, DbError<EP::Error>>
+) -> Result<Option<EventStoreEvent<<T as Aggregate>::DomainEvent>>, EventSourcingDbError<EP, T>>
 where
     E: Executor<'c, Database = sqlx::Postgres>,
-    T: Aggregate<AggregateId = Uuid>,
+    T: Aggregate<AggregateId = Uuid> + Pickle,
     T::DomainEvent: DomainEvent<EventId = Uuid> + Pickle + Send,
+    T::SideEffect: Pickle,
     EP: EncryptionProvider,
 {
     let Some(mut row) = query_as::<_, PartialEventRow>(query)
@@ -92,13 +94,13 @@ where
         .map_err(DbError::Encryption)?
         .into_iter();
     let Some(event) = plain.next() else {
-        return Err(DbError::EncrypytionProviderReturnedWrongNumberOfItems);
+        return Err(DbError::EncryptionProviderReturnedWrongNumberOfItems);
     };
     if plain.next().is_some() {
-        return Err(DbError::EncrypytionProviderReturnedWrongNumberOfItems);
+        return Err(DbError::EncryptionProviderReturnedWrongNumberOfItems);
     }
     row.event = event;
-    Ok(Some(PartialEventRow::to_event(row)?))
+    Ok(Some(PartialEventRow::to_event::<T, EP::Error>(row)?))
 }
 
 /// Generic implementation for getting a snapshot from configured table.
@@ -107,10 +109,12 @@ pub async fn get_snapshot<'c, E, T, EP>(
     id: &T::AggregateId,
     query: &str,
     encryption_provider: &EP,
-) -> Result<Option<Snapshot<T>>, DbError<EP::Error>>
+) -> Result<Option<Snapshot<T>>, EventSourcingDbError<EP, T>>
 where
     E: Executor<'c, Database = sqlx::Postgres>,
     T: Aggregate<AggregateId = Uuid> + Pickle,
+    T::DomainEvent: DomainEvent<EventId = Uuid> + Pickle,
+    T::SideEffect: Pickle,
     EP: EncryptionProvider,
 {
     let row = query_as::<_, PartialSnapshotRow>(query)
@@ -128,12 +132,12 @@ where
         .await
         .map_err(DbError::Encryption)?;
     if plain.len() != 1 {
-        Err(DbError::EncrypytionProviderReturnedWrongNumberOfItems)?;
+        Err(DbError::EncryptionProviderReturnedWrongNumberOfItems)?;
     }
     row.aggregate = plain
         .into_iter()
         .next()
         .expect("Decrypt must return 1 item for snapshot");
 
-    Ok(Some(PartialSnapshotRow::to_snapshot(row)?))
+    Ok(Some(PartialSnapshotRow::to_snapshot::<T, EP::Error>(row)?))
 }

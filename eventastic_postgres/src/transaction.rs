@@ -1,7 +1,7 @@
 use crate::common::utils;
 use crate::pickle::Pickle;
-use crate::{DbError, EncryptionProvider, SideEffectStorage, TableRegistry, reader_impl};
-use anyhow::Context as _;
+use crate::table_config::TableConfig;
+use crate::{DbError, EncryptionProvider, EventSourcingDbError, SideEffectStorage, reader_impl};
 use async_trait::async_trait;
 use chrono::DateTime;
 use chrono::Utc;
@@ -12,7 +12,6 @@ use eventastic::event::DomainEvent;
 use eventastic::event::EventStoreEvent;
 use eventastic::repository::Snapshot;
 use eventastic::repository::{RepositoryError, RepositoryReader, RepositoryWriter};
-use futures::StreamExt;
 use sqlx::Row;
 use sqlx::types::Uuid;
 use sqlx::{Postgres, Transaction};
@@ -24,25 +23,23 @@ use sqlx::{Postgres, Transaction};
 pub struct PostgresTransaction<'a, T, O, E> {
     pub(crate) inner: Transaction<'a, Postgres>,
     pub(crate) outbox: &'a O,
-    pub(crate) tables: &'a TableRegistry,
+    pub(crate) table_config: &'a TableConfig,
     pub(crate) encryption_provider: &'a E,
     pub(crate) phantom_aggregate: std::marker::PhantomData<T>,
 }
 
 impl<'a, T, O, E> PostgresTransaction<'a, T, O, E>
 where
-    O: SideEffectStorage<E::Error, T::SideEffect>,
-    E: EncryptionProvider + Send + Sync + 'static,
-    T: Aggregate<AggregateId = Uuid> + 'static + Send + Sync + Pickle,
-    T::DomainEvent: DomainEvent<EventId = Uuid> + Pickle + Send + Sync,
-    T::SideEffect: SideEffect<SideEffectId = Uuid> + Pickle + Send + Sync,
-    T::ApplyError: Send + Sync,
+    T: eventastic::aggregate::Aggregate + Pickle,
+    T::DomainEvent: Pickle,
+    T::SideEffect: Pickle,
+    E: EncryptionProvider,
 {
     /// Commit the transaction to the database.
     ///
     /// This finalizes all operations performed within this transaction,
     /// making them permanently visible to other database connections.
-    pub async fn commit(self) -> Result<(), DbError<E::Error>> {
+    pub async fn commit(self) -> Result<(), EventSourcingDbError<E, T>> {
         Ok(self.inner.commit().await?)
     }
 
@@ -50,7 +47,7 @@ where
     ///
     /// This undoes all operations performed within this transaction,
     /// returning the database to its state before the transaction began.
-    pub async fn rollback(self) -> Result<(), DbError<E::Error>> {
+    pub async fn rollback(self) -> Result<(), EventSourcingDbError<E, T>> {
         Ok(self.inner.rollback().await?)
     }
 
@@ -64,24 +61,35 @@ where
         &mut self.inner
     }
 
-    /// Get an aggregate by ID using the table registry.
+    /// Get the encryption provider reference
+    pub fn encryption_provider(&self) -> &E {
+        self.encryption_provider
+    }
+}
+
+impl<'a, T, O, E> PostgresTransaction<'a, T, O, E>
+where
+    O: SideEffectStorage<E::Error, T::SideEffect>,
+    E: EncryptionProvider + Send + Sync + 'static,
+    T: Aggregate<AggregateId = Uuid> + 'static + Send + Sync + Pickle,
+    T::DomainEvent: DomainEvent<EventId = Uuid> + Pickle + Send + Sync,
+    T::SideEffect: SideEffect<SideEffectId = Uuid> + Pickle + Send + Sync,
+    T::ApplyError: Send + Sync,
+{
+    /// Get an aggregate by ID.
     pub async fn get(
         &mut self,
         id: &Uuid,
-    ) -> Result<Context<T>, RepositoryError<T::ApplyError, Uuid, DbError<E::Error>>> {
+    ) -> Result<Context<T>, RepositoryError<T::ApplyError, Uuid, EventSourcingDbError<E, T>>> {
         Context::load(self, id).await
     }
 
-    /// Store an aggregate using the table registry.
+    /// Store an aggregate.
     pub async fn store(
         &mut self,
         aggregate: &mut Context<T>,
-    ) -> Result<(), SaveError<T, DbError<E::Error>>> {
+    ) -> Result<(), SaveError<T, EventSourcingDbError<E, T>>> {
         aggregate.save(self).await
-    }
-
-    pub fn encryption_provider(&self) -> &E {
-        self.encryption_provider
     }
 }
 
@@ -95,7 +103,7 @@ where
     O: SideEffectStorage<E::Error, T::SideEffect>,
     E: EncryptionProvider + Send + Sync,
 {
-    type DbError = DbError<E::Error>;
+    type DbError = EventSourcingDbError<E, T>;
 
     /// Returns a stream of domain events.
     fn stream_from(
@@ -110,17 +118,12 @@ where
             Self::DbError,
         >,
     > {
-        let query = match self.tables.stream_events_query::<T>() {
-            Some(query) => query,
-            None => {
-                return futures::stream::iter(vec![Err(DbError::UnregisteredAggregate)]).boxed();
-            }
-        };
+        let query = &self.table_config.stream_events_query;
         Box::pin(reader_impl::stream_from::<_, T, E>(
             &mut *self.inner,
             id,
             version,
-            query,
+            query.clone(),
             self.encryption_provider,
         ))
     }
@@ -131,10 +134,7 @@ where
         aggregate_id: &T::AggregateId,
         event_id: &<<T as Aggregate>::DomainEvent as DomainEvent>::EventId,
     ) -> Result<Option<EventStoreEvent<<T as Aggregate>::DomainEvent>>, Self::DbError> {
-        let query = self
-            .tables
-            .get_event_query::<T>()
-            .ok_or(DbError::UnregisteredAggregate)?;
+        let query = &self.table_config.get_event_query;
         reader_impl::get_event::<_, T, E>(
             &mut *self.inner,
             aggregate_id,
@@ -150,10 +150,7 @@ where
         &mut self,
         id: &T::AggregateId,
     ) -> Result<Option<Snapshot<T>>, Self::DbError> {
-        let query = self
-            .tables
-            .get_snapshot_query::<T>()
-            .ok_or(DbError::UnregisteredAggregate)?;
+        let query = &self.table_config.get_snapshot_query;
         reader_impl::get_snapshot::<_, T, E>(&mut *self.inner, id, query, self.encryption_provider)
             .await
     }
@@ -190,11 +187,7 @@ where
 
                 let version = utils::version_to_i64(version)?;
 
-                let serialised_event = event
-                    .event
-                    .pickle()
-                    .context("Failed to pickle event")
-                    .map_err(DbError::PicklingError)?;
+                let serialised_event = event.event.pickle().map_err(DbError::EventPicklingError)?;
 
                 event_ids_to_insert.push(event_id);
                 versions_to_insert.push(version);
@@ -209,15 +202,12 @@ where
                 .await
                 .map_err(DbError::Encryption)?;
             if cipher.len() != number_of_items {
-                return Err(DbError::EncrypytionProviderReturnedWrongNumberOfItems);
+                return Err(DbError::EncryptionProviderReturnedWrongNumberOfItems);
             }
             events_to_insert.append(&mut cipher);
         }
 
-        let insert_query = self
-            .tables
-            .insert_events_query::<T>()
-            .ok_or(DbError::UnregisteredAggregate)?;
+        let insert_query = &self.table_config.insert_events_query;
 
         let inserted_ids: Result<Vec<Uuid>, sqlx::Error> = sqlx::query(insert_query)
             .bind(&event_ids_to_insert[..])
@@ -240,8 +230,7 @@ where
         let aggregate = snapshot
             .aggregate
             .pickle()
-            .context("Failed to pickle aggregate")
-            .map_err(DbError::PicklingError)?;
+            .map_err(DbError::SnapshotPicklingError)?;
         let mut cipher = self
             .encryption_provider
             .encrypt(vec![aggregate])
@@ -249,16 +238,13 @@ where
             .map_err(DbError::Encryption)?
             .into_iter();
         let Some(aggregate) = cipher.next() else {
-            return Err(DbError::EncrypytionProviderReturnedWrongNumberOfItems);
+            return Err(DbError::EncryptionProviderReturnedWrongNumberOfItems);
         };
         if cipher.next().is_some() {
-            return Err(DbError::EncrypytionProviderReturnedWrongNumberOfItems);
+            return Err(DbError::EncryptionProviderReturnedWrongNumberOfItems);
         }
 
-        let upsert_query = self
-            .tables
-            .upsert_snapshot_query::<T>()
-            .ok_or(DbError::UnregisteredAggregate)?;
+        let upsert_query = &self.table_config.upsert_snapshot_query;
 
         sqlx::query(upsert_query)
             .bind(aggregated_id)
@@ -281,5 +267,6 @@ where
         self.outbox
             .store_side_effects(&mut self.inner, outbox_item)
             .await
+            .map_err(|e| e.into())
     }
 }

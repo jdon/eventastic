@@ -10,15 +10,14 @@ categories = ["web-programming", "asynchronous"]
 keywords = ["postgres", "postgresql", "database", "ddd", "event-sourcing"]
 
 [dependencies]
-anyhow = { workspace = true }
 async-trait = { workspace = true }
 async-stream = { workspace = true }
 chrono = { workspace = true }
 eventastic = { path = "../eventastic", version = "0.5" }
 futures = { workspace = true }
 futures-util = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 sqlx = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
@@ -26,3 +25,7 @@ tokio = { workspace = true }
 [dev-dependencies]
 eventastic_outbox_postgres = { path = "../eventastic_outbox_postgres" }
 uuid = { workspace = true }
+
+[features]
+default = []
+serde = ["dep:serde", "dep:serde_json"]
