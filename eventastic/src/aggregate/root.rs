@@ -342,7 +342,7 @@ where
 
     /// This error is returned when the Repository fails to insert the event
     /// because the version already exists, indicating a concurrent modification.
-    #[error("Optimistic Concurrency Error Version {1} of aggregate {0:?} already exists")]
+    #[error("Optimistic Concurrency Error")]
     OptimisticConcurrency(T::AggregateId, u64),
 }
 
