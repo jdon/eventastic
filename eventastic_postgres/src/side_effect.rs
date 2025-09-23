@@ -1,4 +1,4 @@
-use crate::DbError;
+use crate::SideEffectDbError;
 use crate::pickle::Pickle;
 use async_trait::async_trait;
 use eventastic::aggregate::SideEffect;
@@ -11,7 +11,7 @@ use sqlx::{Postgres, Transaction};
 /// different implementations such as direct table storage or outbox patterns.
 /// Implementors define how side effects are persisted within a database transaction.
 #[async_trait]
-pub trait SideEffectStorage<E, T>: Send + Sync
+pub trait SideEffectStorage<EncryptionError, T>: Send + Sync
 where
     T: SideEffect<SideEffectId = Uuid> + Pickle + Send + Sync,
 {
@@ -27,10 +27,10 @@ where
     ///
     /// # Errors
     ///
-    /// Returns [`DbError`] if the storage operation fails.
+    /// Returns [`SideEffectDbError`] if the storage operation fails.
     async fn store_side_effects(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
         items: Vec<T>,
-    ) -> Result<(), DbError<E>>;
+    ) -> Result<(), SideEffectDbError<EncryptionError, <T as Pickle>::Error>>;
 }

@@ -36,9 +36,7 @@ async fn when_encryption_is_enabled_aggregate_can_be_saved_and_loaded() {
         .expect("Failed to commit transaction");
 
     // Assert
-    let loaded_account = load_encrypted_account(account_id)
-        .await
-        .expect("Failed to load account");
+    let loaded_account = load_encrypted_account(account_id).await;
     let loaded_account = loaded_account.state();
 
     assert_eq!(created_account, loaded_account);
@@ -130,7 +128,7 @@ async fn when_encryption_is_enabled_events_cannot_be_loaded_by_id_without_encryp
             Account,
         >>::get_event(&mut repository, &account_id, &event_id)
         .await;
-    assert!(matches!(result, Err(DbError::PicklingError(_))));
+    assert!(matches!(result, Err(DbError::EventPicklingError(_))));
 }
 
 #[tokio::test]
@@ -165,7 +163,7 @@ async fn when_encryption_is_enabled_events_can_be_saved_and_loaded() {
         &mut repository, &account_id, 0
     );
     while let Some(event) = events.next().await {
-        assert!(matches!(event, Ok(_)));
+        assert!(event.is_ok());
     }
 }
 
@@ -200,7 +198,7 @@ async fn when_encryption_is_enabled_events_cannot_be_loaded_without_encryption()
     while let Some(event) = events.next().await {
         assert!(matches!(
             event,
-            Err(eventastic_postgres::DbError::PicklingError(_))
+            Err(eventastic_postgres::DbError::EventPicklingError(_))
         ));
     }
 }
@@ -230,10 +228,11 @@ async fn when_encryption_is_enabled_aggregate_cannot_be_loaded_without_encryptio
     // Assert
     let repository = get_repository().await;
     let mut transaction = repository.begin_transaction().await.unwrap();
+
     assert!(matches!(
         transaction.get(&account_id).await,
         Err(eventastic::repository::RepositoryError::Repository(
-            eventastic_postgres::DbError::PicklingError(_)
+            eventastic_postgres::DbError::SnapshotPicklingError(_)
         )),
     ));
 }
@@ -290,7 +289,7 @@ async fn when_encryption_is_enabled_side_effect_can_be_saved_and_loaded() {
     }
 }
 
-async fn load_encrypted_account(account_id: Uuid) -> anyhow::Result<Context<Account>> {
+async fn load_encrypted_account(account_id: Uuid) -> Context<Account> {
     let repository = get_encrypted_repository().await;
 
     let mut transaction = repository
@@ -298,7 +297,8 @@ async fn load_encrypted_account(account_id: Uuid) -> anyhow::Result<Context<Acco
         .await
         .expect("Failed to begin transaction");
 
-    let context: Context<Account> = transaction.get(&account_id).await?;
-
-    Ok(context)
+    transaction
+        .get(&account_id)
+        .await
+        .expect("Failed to encrypted load account")
 }

@@ -4,8 +4,6 @@
 //! that can be used across different test modules to ensure consistency
 //! and reduce code duplication.
 
-#![cfg(test)]
-
 use crate::{
     aggregate::{Aggregate, SideEffect},
     event::DomainEvent,
@@ -139,21 +137,21 @@ impl Aggregate for TestCounter {
         match event {
             TestEvent::Reset { event_id, .. } => Some(vec![
                 TestSideEffect::LogOperation {
-                    id: format!("{}-log", event_id),
+                    id: format!("{event_id}-log"),
                     operation: "Reset".to_string(),
                 },
                 TestSideEffect::NotifyUser {
-                    id: format!("{}-notify", event_id),
+                    id: format!("{event_id}-notify"),
                     message: "Counter has been reset".to_string(),
                 },
             ]),
             TestEvent::Add { event_id, value } => Some(vec![TestSideEffect::LogOperation {
-                id: format!("{}-log", event_id),
-                operation: format!("Add {}", value),
+                id: format!("{event_id}-log"),
+                operation: format!("Add {value}"),
             }]),
             TestEvent::Subtract { event_id, value } => Some(vec![TestSideEffect::LogOperation {
-                id: format!("{}-log", event_id),
-                operation: format!("Subtract {}", value),
+                id: format!("{event_id}-log"),
+                operation: format!("Subtract {value}"),
             }]),
             TestEvent::Multiply { .. } => None, // No side effects for multiply
         }

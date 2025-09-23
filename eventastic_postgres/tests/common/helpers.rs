@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use eventastic::aggregate::{Context, Root};
 use eventastic_outbox_postgres::TableOutbox;
 use eventastic_postgres::{
-    EncryptionProvider, NoEncryption, Pickle, PostgresRepository, TableRegistryBuilder,
+    EncryptionProvider, NoEncryption, Pickle, PostgresRepository, TableConfig,
 };
 use sqlx::Row;
 use sqlx::{pool::PoolOptions, postgres::PgConnectOptions};
@@ -20,15 +20,11 @@ pub async fn get_repository() -> PostgresRepository<Account, TableOutbox<NoEncry
 
     let pool_options = PoolOptions::default();
 
-    let tables = TableRegistryBuilder::new()
-        .register_with_tables::<Account>("events", "snapshots")
-        .build();
-
     let repo = PostgresRepository::new(
         connection_options,
         pool_options,
+        TableConfig::new("events", "snapshots"),
         TableOutbox::new(NoEncryption),
-        tables,
         NoEncryption,
     )
     .await
@@ -48,15 +44,11 @@ pub async fn get_encrypted_repository()
 
     let pool_options = PoolOptions::default();
 
-    let tables = TableRegistryBuilder::new()
-        .register_with_tables::<Account>("events", "snapshots")
-        .build();
-
     let repo = PostgresRepository::new(
         connection_options,
         pool_options,
+        TableConfig::new("events", "snapshots"),
         TableOutbox::new(TestEncryptionProvider),
-        tables,
         TestEncryptionProvider,
     )
     .await
@@ -67,7 +59,7 @@ pub async fn get_encrypted_repository()
     repo
 }
 
-#[derive(serde::Deserialize, Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone)]
 pub struct SavedSnapshot {
     pub version: i64,
     pub aggregate: Account,
