@@ -1,17 +1,19 @@
-use crate::pickle::Pickle;
-use crate::{DbError, PostgresTransaction, SideEffectStorage, TableRegistry, reader_impl};
+use crate::{
+    EventSourcingDbError, PostgresTransaction, SideEffectStorage, encryption::EncryptionProvider,
+    pickle::Pickle, reader_impl, table_config::TableConfig,
+};
 use async_trait::async_trait;
 use eventastic::{
     aggregate::{Aggregate, Context, SideEffect},
     event::{DomainEvent, EventStoreEvent},
     repository::{Repository, RepositoryError, RepositoryReader, Snapshot},
 };
-use futures::StreamExt;
 use sqlx::{
     Pool, Postgres,
     postgres::{PgConnectOptions, PgPoolOptions},
     types::Uuid,
 };
+use std::marker::PhantomData;
 
 /// PostgreSQL-based repository implementation for event sourcing.
 ///
@@ -19,19 +21,15 @@ use sqlx::{
 /// using PostgreSQL as the backing store. It integrates with a configurable side effect
 /// storage mechanism for handling the outbox pattern.
 #[derive(Clone)]
-pub struct PostgresRepository<O>
-where
-    O: SideEffectStorage + Clone,
-{
-    pub(crate) inner: Pool<Postgres>,
-    pub(crate) outbox: O,
-    pub(crate) tables: TableRegistry,
+pub struct PostgresRepository<T, O, E> {
+    inner: Pool<Postgres>,
+    outbox: O,
+    table_config: TableConfig,
+    encryption_provider: E,
+    phantom_aggregate: std::marker::PhantomData<T>,
 }
 
-impl<O> PostgresRepository<O>
-where
-    O: SideEffectStorage + Clone,
-{
+impl<T, O, E> PostgresRepository<T, O, E> {
     /// Creates a new PostgreSQL repository with the specified connection and pool options.
     ///
     /// # Parameters
@@ -39,19 +37,21 @@ where
     /// - `connect_options` - PostgreSQL connection configuration
     /// - `pool_options` - Connection pool configuration  
     /// - `outbox` - Side effect storage implementation for the outbox pattern
-    /// - `tables` - Registry of table configurations for different aggregates
     pub async fn new(
         connect_options: PgConnectOptions,
         pool_options: PgPoolOptions,
+        table_config: TableConfig,
         outbox: O,
-        tables: TableRegistry,
+        encryption_provider: E,
     ) -> Result<Self, sqlx::Error> {
         let pool = pool_options.connect_with(connect_options).await?;
 
         Ok(Self {
             inner: pool,
             outbox,
-            tables,
+            table_config,
+            encryption_provider,
+            phantom_aggregate: PhantomData,
         })
     }
 
@@ -59,12 +59,31 @@ where
     ///
     /// The returned transaction can be used to perform multiple operations
     /// atomically and provides access to the repository methods.
-    pub async fn begin_transaction(&self) -> Result<PostgresTransaction<'_, O>, sqlx::Error> {
+    pub async fn begin_transaction(&self) -> Result<PostgresTransaction<'_, T, O, E>, sqlx::Error> {
         Ok(PostgresTransaction {
             inner: self.inner.begin().await?,
             outbox: &self.outbox,
-            tables: &self.tables,
+            table_config: &self.table_config,
+            encryption_provider: &self.encryption_provider,
+            phantom_aggregate: PhantomData,
         })
+    }
+
+    /// Create a transaction from an existing raw sqlx transaction.
+    ///
+    /// This is useful for multi-aggregate scenarios where you want to use
+    /// the same database transaction across multiple repository types.
+    pub fn transaction_from<'a>(
+        &'a self,
+        transaction: sqlx::Transaction<'a, Postgres>,
+    ) -> PostgresTransaction<'a, T, O, E> {
+        PostgresTransaction {
+            inner: transaction,
+            outbox: &self.outbox,
+            table_config: &self.table_config,
+            encryption_provider: &self.encryption_provider,
+            phantom_aggregate: PhantomData,
+        }
     }
 
     /// Run database migrations to set up the required tables and schema.
@@ -80,15 +99,16 @@ where
 }
 
 #[async_trait]
-impl<O, T> RepositoryReader<T> for PostgresRepository<O>
+impl<T, O, E> RepositoryReader<T> for PostgresRepository<T, O, E>
 where
     T: Aggregate<AggregateId = Uuid> + Pickle + Send + Sync + 'static,
     T::DomainEvent: DomainEvent<EventId = Uuid> + Pickle + Send + Sync,
     T::SideEffect: SideEffect<SideEffectId = Uuid> + Pickle + Send + Sync,
     T::ApplyError: Send + Sync,
-    O: SideEffectStorage + Clone + Send + Sync,
+    O: SideEffectStorage<E::Error, T::SideEffect> + Clone + Send + Sync,
+    E: EncryptionProvider + Clone + Send + Sync,
 {
-    type DbError = DbError;
+    type DbError = EventSourcingDbError<E, T>;
 
     /// Returns a stream of domain events.
     fn stream_from(
@@ -103,17 +123,13 @@ where
             Self::DbError,
         >,
     > {
-        let query = match self.tables.stream_events_query::<T>() {
-            Some(query) => query.to_string(),
-            None => {
-                return futures::stream::iter(vec![Err(DbError::UnregisteredAggregate)]).boxed();
-            }
-        };
-        Box::pin(reader_impl::stream_from::<_, T>(
+        let query = &self.table_config.stream_events_query;
+        Box::pin(reader_impl::stream_from::<_, T, E>(
             &self.inner,
             id,
             version,
-            query,
+            query.clone(),
+            &self.encryption_provider,
         ))
     }
 
@@ -123,11 +139,15 @@ where
         aggregate_id: &T::AggregateId,
         event_id: &<<T as Aggregate>::DomainEvent as DomainEvent>::EventId,
     ) -> Result<Option<EventStoreEvent<<T as Aggregate>::DomainEvent>>, Self::DbError> {
-        let query = self
-            .tables
-            .get_event_query::<T>()
-            .ok_or(DbError::UnregisteredAggregate)?;
-        reader_impl::get_event::<_, T>(&self.inner, aggregate_id, event_id, query).await
+        let query = &self.table_config.get_event_query;
+        reader_impl::get_event::<_, T, E>(
+            &self.inner,
+            aggregate_id,
+            event_id,
+            query,
+            &self.encryption_provider,
+        )
+        .await
     }
 
     /// Returns a snapshot of the aggregate in the database
@@ -135,27 +155,26 @@ where
         &mut self,
         id: &T::AggregateId,
     ) -> Result<Option<Snapshot<T>>, Self::DbError> {
-        let query = self
-            .tables
-            .get_snapshot_query::<T>()
-            .ok_or(DbError::UnregisteredAggregate)?;
-        reader_impl::get_snapshot::<_, T>(&self.inner, id, query).await
+        let query = &self.table_config.get_snapshot_query;
+        reader_impl::get_snapshot::<_, T, E>(&self.inner, id, query, &self.encryption_provider)
+            .await
     }
 }
 
 #[async_trait]
-impl<O, T> Repository<T> for PostgresRepository<O>
+impl<T, O, E> Repository<T> for PostgresRepository<T, O, E>
 where
     T: Aggregate<AggregateId = Uuid> + Pickle + Send + Sync + 'static,
     T::DomainEvent: DomainEvent<EventId = Uuid> + Pickle + Send + Sync,
     T::SideEffect: eventastic::aggregate::SideEffect<SideEffectId = Uuid> + Pickle + Send + Sync,
     T::ApplyError: Send + Sync,
-    O: SideEffectStorage + Clone + Send + Sync,
+    O: SideEffectStorage<E::Error, T::SideEffect> + Clone + Send + Sync,
+    E: EncryptionProvider + Clone + Send + Sync,
 {
     type Error = RepositoryError<
         T::ApplyError,
         <<T as Aggregate>::DomainEvent as DomainEvent>::EventId,
-        DbError,
+        EventSourcingDbError<E, T>,
     >;
 
     /// Loads an aggregate from the repository by its ID.

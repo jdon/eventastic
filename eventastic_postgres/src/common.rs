@@ -5,11 +5,32 @@
 
 use crate::DbError;
 use crate::pickle::Pickle;
-use anyhow::Context;
 use eventastic::aggregate::Aggregate;
 use eventastic::event::{DomainEvent, EventStoreEvent};
 use eventastic::repository::Snapshot;
 use sqlx::types::Uuid;
+
+/// Type alias for the complex return type of event conversion operations.
+type EventResult<T, E> = Result<
+    EventStoreEvent<<T as Aggregate>::DomainEvent>,
+    DbError<
+        E,
+        <<T as Aggregate>::DomainEvent as Pickle>::Error,
+        <T as Pickle>::Error,
+        <<T as Aggregate>::SideEffect as Pickle>::Error,
+    >,
+>;
+
+/// Type alias for the complex return type of snapshot conversion operations.
+type SnapshotResult<T, E> = Result<
+    Snapshot<T>,
+    DbError<
+        E,
+        <<T as Aggregate>::DomainEvent as Pickle>::Error,
+        <T as Pickle>::Error,
+        <<T as Aggregate>::SideEffect as Pickle>::Error,
+    >,
+>;
 
 /// Internal representation of a database row containing event data.
 ///
@@ -36,21 +57,22 @@ impl PartialEventRow {
     /// # Errors
     ///
     /// Returns [`DbError::InvalidVersionNumber`] if the version cannot be converted to u64.
-    /// Returns [`DbError::PicklingError`] if the event JSON cannot be deserialized.
-    pub fn to_event<Evt>(row: PartialEventRow) -> Result<EventStoreEvent<Evt>, DbError>
+    /// Returns [`DbError::EventPicklingError`] if the event JSON cannot be deserialized.
+    pub fn to_event<T, E>(row: PartialEventRow) -> EventResult<T, E>
     where
-        Evt: DomainEvent<EventId = Uuid> + Pickle,
+        T: Aggregate + Pickle,
+        T::DomainEvent: DomainEvent<EventId = Uuid> + Pickle,
+        T::SideEffect: Pickle,
     {
         let row_version = u64::try_from(row.version).map_err(|_| DbError::InvalidVersionNumber)?;
 
-        Evt::unpickle(&row.event)
+        T::DomainEvent::unpickle(&row.event)
             .map(|e| EventStoreEvent {
                 id: row.event_id,
                 event: e,
                 version: row_version,
             })
-            .context("Failed to unpickle event")
-            .map_err(DbError::PicklingError)
+            .map_err(DbError::EventPicklingError)
     }
 }
 
@@ -80,17 +102,17 @@ impl PartialSnapshotRow {
     ///
     /// Returns [`DbError::InvalidVersionNumber`] if the version cannot be converted to u64.
     /// Returns [`DbError::InvalidSnapshotVersion`] if the snapshot version cannot be converted to u64.
-    /// Returns [`DbError::PicklingError`] if the aggregate JSON cannot be deserialized.
-    pub fn to_snapshot<T>(row: PartialSnapshotRow) -> Result<Snapshot<T>, DbError>
+    /// Returns [`DbError::SnapshotPicklingError`] if the aggregate JSON cannot be deserialized.
+    pub fn to_snapshot<T, E>(row: PartialSnapshotRow) -> SnapshotResult<T, E>
     where
         T: Aggregate + Pickle,
+        T::DomainEvent: DomainEvent<EventId = Uuid> + Pickle,
+        T::SideEffect: Pickle,
     {
         let version = u64::try_from(row.version).map_err(|_| DbError::InvalidVersionNumber)?;
         let snapshot_version =
             u64::try_from(row.snapshot_version).map_err(|_| DbError::InvalidSnapshotVersion)?;
-        let aggregate: T = T::unpickle(&row.aggregate)
-            .context("Failed to unpickle aggregate")
-            .map_err(DbError::PicklingError)?;
+        let aggregate: T = T::unpickle(&row.aggregate).map_err(DbError::SnapshotPicklingError)?;
 
         Ok(Snapshot {
             aggregate,
@@ -109,7 +131,7 @@ pub(crate) mod utils {
     /// # Errors
     ///
     /// Returns [`DbError::InvalidVersionNumber`] if the conversion fails.
-    pub fn version_to_i64(version: u64) -> Result<i64, DbError> {
+    pub fn version_to_i64<EP, E, S, SE>(version: u64) -> Result<i64, DbError<EP, E, S, SE>> {
         i64::try_from(version).map_err(|_| DbError::InvalidVersionNumber)
     }
 
@@ -118,7 +140,9 @@ pub(crate) mod utils {
     /// # Errors
     ///
     /// Returns [`DbError::InvalidSnapshotVersion`] if the conversion fails.
-    pub fn snapshot_version_to_i64(version: u64) -> Result<i64, DbError> {
+    pub fn snapshot_version_to_i64<EP, E, S, SE>(
+        version: u64,
+    ) -> Result<i64, DbError<EP, E, S, SE>> {
         i64::try_from(version).map_err(|_| DbError::InvalidSnapshotVersion)
     }
 }

@@ -1,14 +1,18 @@
+use super::encryption::TestEncryptionProvider;
 use super::test_aggregate::{Account, AccountEvent};
 use chrono::{DateTime, Utc};
 use eventastic::aggregate::{Context, Root};
 use eventastic_outbox_postgres::TableOutbox;
-use eventastic_postgres::{Pickle, PostgresRepository, TableRegistryBuilder};
+use eventastic_postgres::{
+    EncryptionProvider, NoEncryption, Pickle, PostgresRepository, TableConfig,
+};
 use sqlx::Row;
 use sqlx::{pool::PoolOptions, postgres::PgConnectOptions};
 use std::str::FromStr;
 use uuid::Uuid;
 
-pub async fn get_repository() -> PostgresRepository<TableOutbox> {
+pub async fn get_repository() -> PostgresRepository<Account, TableOutbox<NoEncryption>, NoEncryption>
+{
     let host = std::env::var("POSTGRES_HOST").unwrap_or_else(|_| "localhost".to_string());
     let connection_string = format!("postgres://postgres:password@{host}/postgres");
     let connection_options = PgConnectOptions::from_str(connection_string.as_str())
@@ -16,20 +20,46 @@ pub async fn get_repository() -> PostgresRepository<TableOutbox> {
 
     let pool_options = PoolOptions::default();
 
-    let tables = TableRegistryBuilder::new()
-        .register_with_tables::<Account>("events", "snapshots")
-        .build();
-
-    let repo = PostgresRepository::new(connection_options, pool_options, TableOutbox, tables)
-        .await
-        .expect("Failed to connect to postgres");
+    let repo = PostgresRepository::new(
+        connection_options,
+        pool_options,
+        TableConfig::new("events", "snapshots"),
+        TableOutbox::new(NoEncryption),
+        NoEncryption,
+    )
+    .await
+    .expect("Failed to connect to postgres");
     repo.run_migrations()
         .await
         .expect("Failed to run migrations");
     repo
 }
 
-#[derive(serde::Deserialize, Debug, Clone, serde::Serialize)]
+pub async fn get_encrypted_repository()
+-> PostgresRepository<Account, TableOutbox<TestEncryptionProvider>, TestEncryptionProvider> {
+    let host = std::env::var("POSTGRES_HOST").unwrap_or_else(|_| "localhost".to_string());
+    let connection_string = format!("postgres://postgres:password@{host}/postgres");
+    let connection_options = PgConnectOptions::from_str(connection_string.as_str())
+        .expect("Failed to parse connection options");
+
+    let pool_options = PoolOptions::default();
+
+    let repo = PostgresRepository::new(
+        connection_options,
+        pool_options,
+        TableConfig::new("events", "snapshots"),
+        TableOutbox::new(TestEncryptionProvider),
+        TestEncryptionProvider,
+    )
+    .await
+    .expect("Failed to connect to postgres");
+    repo.run_migrations()
+        .await
+        .expect("Failed to run migrations");
+    repo
+}
+
+#[derive(Debug, Clone)]
 pub struct SavedSnapshot {
     pub version: i64,
     pub aggregate: Account,
@@ -355,6 +385,7 @@ impl AccountBuilder {
 
 pub async fn get_side_effect(
     id: uuid::Uuid,
+    encryption_provider: impl EncryptionProvider,
 ) -> Option<(super::test_aggregate::SideEffects, i32, bool)> {
     let repository = get_repository().await;
     let transaction = repository
@@ -379,8 +410,14 @@ pub async fn get_side_effect(
             .try_get("requeue")
             .expect("Failed to get requeue from row");
 
+        let plain = encryption_provider
+            .decrypt(vec![message_bytes])
+            .await
+            .unwrap();
+        assert!(plain.len() == 1);
+        let plain = &plain[0];
         let side_effect: super::test_aggregate::SideEffects =
-            super::test_aggregate::SideEffects::unpickle(&message_bytes)
+            super::test_aggregate::SideEffects::unpickle(plain)
                 .expect("Failed to deserialize side effect");
 
         Some((side_effect, retries, requeue))
