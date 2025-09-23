@@ -9,7 +9,7 @@ use eventastic::aggregate::SideEffect;
 use eventastic::event::DomainEvent;
 use eventastic::repository::Repository;
 use eventastic_outbox_postgres::{RepositoryOutboxExt, SideEffectHandler, TableOutbox};
-use eventastic_postgres::{NoEncryption, PostgresRepository, RootExt};
+use eventastic_postgres::{NoEncryption, PostgresRepository, RootExt, TableConfig};
 use serde::Deserialize;
 use serde::Serialize;
 use sqlx::{pool::PoolOptions, postgres::PgConnectOptions};
@@ -17,7 +17,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 #[tokio::main]
-async fn main() -> Result<(), anyhow::Error> {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Setup postgres repo
     let repository = get_repository().await;
 
@@ -386,21 +386,17 @@ impl Aggregate for Account {
 
 // Using the default outbox implementation
 // You can also implement your own outbox handler by implementing the `SideEffectStorage` trait
-async fn get_repository() -> PostgresRepository<TableOutbox<NoEncryption>, NoEncryption> {
+async fn get_repository() -> PostgresRepository<Account, TableOutbox<NoEncryption>, NoEncryption> {
     let connection_options =
         PgConnectOptions::from_str("postgres://postgres:password@localhost/postgres").unwrap();
 
     let pool_options = PoolOptions::default();
 
-    let tables = eventastic_postgres::TableRegistryBuilder::new()
-        .register_with_tables::<Account>("events", "snapshots")
-        .build();
-
     PostgresRepository::new(
         connection_options,
         pool_options,
+        TableConfig::new("events", "snapshots"),
         TableOutbox::new(NoEncryption),
-        tables,
         NoEncryption,
     )
     .await

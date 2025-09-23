@@ -4,14 +4,15 @@ use chrono::{DateTime, Utc};
 use eventastic::aggregate::{Context, Root};
 use eventastic_outbox_postgres::TableOutbox;
 use eventastic_postgres::{
-    EncryptionProvider, NoEncryption, Pickle, PostgresRepository, TableRegistryBuilder,
+    EncryptionProvider, NoEncryption, Pickle, PostgresRepository, TableConfig,
 };
 use sqlx::Row;
 use sqlx::{pool::PoolOptions, postgres::PgConnectOptions};
 use std::str::FromStr;
 use uuid::Uuid;
 
-pub async fn get_repository() -> PostgresRepository<TableOutbox<NoEncryption>, NoEncryption> {
+pub async fn get_repository() -> PostgresRepository<Account, TableOutbox<NoEncryption>, NoEncryption>
+{
     let host = std::env::var("POSTGRES_HOST").unwrap_or_else(|_| "localhost".to_string());
     let connection_string = format!("postgres://postgres:password@{host}/postgres");
     let connection_options = PgConnectOptions::from_str(connection_string.as_str())
@@ -19,15 +20,11 @@ pub async fn get_repository() -> PostgresRepository<TableOutbox<NoEncryption>, N
 
     let pool_options = PoolOptions::default();
 
-    let tables = TableRegistryBuilder::new()
-        .register_with_tables::<Account>("events", "snapshots")
-        .build();
-
     let repo = PostgresRepository::new(
         connection_options,
         pool_options,
+        TableConfig::new("events", "snapshots"),
         TableOutbox::new(NoEncryption),
-        tables,
         NoEncryption,
     )
     .await
@@ -39,7 +36,7 @@ pub async fn get_repository() -> PostgresRepository<TableOutbox<NoEncryption>, N
 }
 
 pub async fn get_encrypted_repository()
--> PostgresRepository<TableOutbox<TestEncryptionProvider>, TestEncryptionProvider> {
+-> PostgresRepository<Account, TableOutbox<TestEncryptionProvider>, TestEncryptionProvider> {
     let host = std::env::var("POSTGRES_HOST").unwrap_or_else(|_| "localhost".to_string());
     let connection_string = format!("postgres://postgres:password@{host}/postgres");
     let connection_options = PgConnectOptions::from_str(connection_string.as_str())
@@ -47,15 +44,11 @@ pub async fn get_encrypted_repository()
 
     let pool_options = PoolOptions::default();
 
-    let tables = TableRegistryBuilder::new()
-        .register_with_tables::<Account>("events", "snapshots")
-        .build();
-
     let repo = PostgresRepository::new(
         connection_options,
         pool_options,
+        TableConfig::new("events", "snapshots"),
         TableOutbox::new(TestEncryptionProvider),
-        tables,
         TestEncryptionProvider,
     )
     .await
@@ -66,7 +59,7 @@ pub async fn get_encrypted_repository()
     repo
 }
 
-#[derive(serde::Deserialize, Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone)]
 pub struct SavedSnapshot {
     pub version: i64,
     pub aggregate: Account,
