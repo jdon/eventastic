@@ -1,17 +1,15 @@
 use std::str::FromStr;
 
-use async_trait::async_trait;
 use eventastic::aggregate::Aggregate;
 use eventastic::aggregate::Context;
 
-use eventastic::aggregate::RecordError;
 use eventastic::aggregate::Root;
+use eventastic::aggregate::SaveError;
 use eventastic::aggregate::SideEffect;
-use eventastic::aggregate::SideEffectHandler;
-use eventastic::event::Event;
-use eventastic::repository::RepositoryTransaction;
-use eventastic_postgres::PostgresRepository;
-
+use eventastic::event::DomainEvent;
+use eventastic::repository::Repository;
+use eventastic_outbox_postgres::{RepositoryOutboxExt, SideEffectHandler, TableOutbox};
+use eventastic_postgres::{NoEncryption, PostgresRepository, RootExt, TableConfig};
 use serde::Deserialize;
 use serde::Serialize;
 use sqlx::{pool::PoolOptions, postgres::PgConnectOptions};
@@ -19,7 +17,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 #[tokio::main]
-async fn main() -> Result<(), anyhow::Error> {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Setup postgres repo
     let repository = get_repository().await;
 
@@ -27,13 +25,14 @@ async fn main() -> Result<(), anyhow::Error> {
 
     repository.run_migrations().await?;
 
-    // Run our side effects handler in a background task
-    tokio::spawn(async {
-        let repository = get_repository().await;
-
-        let _ = repository
-            .start_outbox(SideEffectContext {}, std::time::Duration::from_secs(5))
-            .await;
+    // Run our side effect handler in the background
+    tokio::spawn({
+        let repo = repository.clone();
+        async move {
+            let _ = repo
+                .start_outbox(SideEffectContext {}, std::time::Duration::from_secs(5))
+                .await;
+        }
     });
 
     // Start transaction
@@ -62,10 +61,7 @@ async fn main() -> Result<(), anyhow::Error> {
     };
 
     // Record add fund events.
-    // Record takes in the transaction, as it does idempotency checks with the db.
-    account
-        .record_that(&mut transaction, add_event.clone())
-        .await?;
+    account.record_that(add_event.clone())?;
 
     // Save uncommitted events and side effects in the db.
     transaction.store(&mut account).await?;
@@ -73,13 +69,18 @@ async fn main() -> Result<(), anyhow::Error> {
     // Commit the transaction
     transaction.commit().await?;
 
-    // Get the aggregate from the db
+    // Get the aggregate from the db using a transaction (read-write access)
     let mut transaction = repository.begin_transaction().await?;
 
-    let mut account: Context<Account> = transaction.get(&account_id).await?;
+    let mut account = Account::load_with_transaction(&mut transaction, account_id).await?;
 
     // Check our balance is correct
     assert_eq!(account.state().balance, 345);
+
+    // Demonstrate loading without a transaction (read-only access, more efficient)
+    let account_readonly: Context<Account> = repository.load(&account_id).await?;
+    assert_eq!(account_readonly.state().balance, 345);
+    println!("Successfully loaded account with non-transactional method");
 
     // Trying to apply the same event id but with different content gives us an IdempotencyError
     let changed_add_event = AccountEvent::Add {
@@ -87,26 +88,124 @@ async fn main() -> Result<(), anyhow::Error> {
         amount: 123,
     };
 
-    let err = account
-        .record_that(&mut transaction, changed_add_event)
+    account.record_that(changed_add_event)?;
+
+    // Applying the already applied event with different content should fail with an IdempotencyError
+    let error = transaction
+        .store(&mut account)
         .await
-        .expect_err("failed to get error");
+        .expect_err("Failed to get idempotency error");
 
-    assert!(matches!(err, RecordError::IdempotencyError(_, _)));
-
-    // Applying the already applied event, will be ignored and return Ok
-    account.record_that(&mut transaction, add_event).await?;
+    assert!(matches!(error, SaveError::IdempotencyError(_, _)));
 
     transaction.commit().await?;
 
     let mut transaction = repository.begin_transaction().await?;
 
-    let account: Context<Account> = transaction.get(&account_id).await?;
+    let mut transaction_2 = repository.begin_transaction().await?;
+
+    let mut old_account_version: Context<Account> = transaction_2.get(&account_id).await?;
+
+    let mut account: Context<Account> = transaction.get(&account_id).await?;
 
     // Balance hasn't changed since the event wasn't actually applied
     assert_eq!(account.state().balance, 345);
 
     println!("Got account {account:?}");
+
+    // Apply a new add event and save to our db. This should have version number 2
+    let add_event = AccountEvent::Add {
+        event_id: Uuid::new_v4(),
+        amount: 456,
+    };
+
+    account.record_that(add_event)?;
+    transaction.store(&mut account).await?;
+    transaction.commit().await?;
+
+    // Attempt to apply another event to our aggregate, but with an out of date version number
+    // This happens normally when two applies are executed concurrently
+    // This will attempt to apply a different event with a version number 2
+    // This should fail with an optimistic concurrency error
+    let add_event = AccountEvent::Add {
+        event_id: Uuid::new_v4(),
+        amount: 789,
+    };
+
+    old_account_version.record_that(add_event)?;
+
+    let err = transaction_2
+        .store(&mut old_account_version)
+        .await
+        .expect_err("Failed to get optimistic concurrency error");
+
+    assert!(matches!(
+        err,
+        SaveError::OptimisticConcurrency(id, version) if id == account_id && version == 2
+    ));
+
+    transaction_2.commit().await?;
+
+    // Demonstrate side effect regeneration
+
+    // Regenerate side effects for the account open event
+    let regenerated_side_effects = Context::<Account>::regenerate_side_effects(
+        &mut repository.clone(),
+        &account_id,
+        &event_id, // This is the Open event ID from the beginning
+    )
+    .await?;
+
+    println!("Original event ID: {event_id}");
+
+    if let Some(side_effects) = regenerated_side_effects {
+        println!(
+            "Successfully regenerated {} side effect(s)",
+            side_effects.len()
+        );
+
+        for effect in side_effects {
+            match &effect {
+                SideEffects::SendEmail {
+                    id,
+                    address,
+                    content,
+                } => {
+                    // Verify this matches what we expect
+                    assert_eq!(id, &event_id);
+                    assert_eq!(address, "user@example.com");
+                    assert!(content.contains(&account_id.to_string()));
+                    assert!(content.contains("21")); // starting balance
+                }
+                SideEffects::PublishMessage { .. } => {
+                    println!("  - PublishMessage (unexpected for Open event)");
+                }
+            }
+        }
+    } else {
+        println!("No side effects were regenerated (this shouldn't happen for Open event)");
+    }
+
+    // Also demonstrate regenerating for an event that doesn't produce side effects
+    println!("\nRegenerating side effects for Add event:");
+    let no_side_effects = Context::<Account>::regenerate_side_effects(
+        &mut repository.clone(),
+        &account_id,
+        &add_event_id,
+    )
+    .await?;
+
+    match no_side_effects {
+        Some(effects) => {
+            println!(
+                "Unexpected: {} side effects generated for Add event",
+                effects.len()
+            );
+        }
+        None => {
+            println!("No side effects generated for Add event (as expected)");
+        }
+    }
 
     tokio::time::sleep(std::time::Duration::from_secs(30)).await;
     Ok(())
@@ -138,7 +237,8 @@ pub enum AccountEvent {
     },
 }
 
-impl Event<Uuid> for AccountEvent {
+impl DomainEvent for AccountEvent {
+    type EventId = Uuid;
     fn id(&self) -> &Uuid {
         match self {
             AccountEvent::Open { event_id, .. }
@@ -173,41 +273,25 @@ pub enum SideEffects {
 
 impl SideEffect for SideEffects {
     /// The type used to uniquely identify this side effect.
-    type Id = Uuid;
-    /// The error type that can be returned when calling a [`SideEffectHandler::handle`]
-    type Error = SideEffectError;
+    type SideEffectId = Uuid;
 
-    fn id(&self) -> &Self::Id {
+    fn id(&self) -> &Self::SideEffectId {
         match self {
             SideEffects::PublishMessage { id, .. } | SideEffects::SendEmail { id, .. } => id,
         }
     }
 }
 
-// Define our side effect errors
-#[derive(Error, Debug)]
-pub enum SideEffectError {
-    #[error("Failed to publish message")]
-    PublishMessageError,
-    #[error("Failed to send email")]
-    SendEmailError,
-}
+pub struct SideEffectContext;
 
-pub struct SideEffectContext {}
-
-#[async_trait]
+#[async_trait::async_trait]
 impl SideEffectHandler for SideEffectContext {
     type SideEffect = SideEffects;
+    type Error = ();
 
-    /// Handle a side effect
-    /// If Ok(()) is returned, the side effect is complete and it will be deleted from the repository.
-    /// If Err((true, Error)) is returned, the side effect be will requeued
-    /// if Err((false, Error)) is returned, the side effect won't be requeued
-    async fn handle(&self, msg: &SideEffects, retires: u16) -> Result<(), (bool, SideEffectError)> {
-        println!("Got side effect message {msg:?} with retires {retires}");
-        let requeue = retires < 3;
-
-        Err((requeue, SideEffectError::PublishMessageError))
+    async fn handle(&self, msg: &SideEffects, retries: u16) -> Result<(), (bool, Self::Error)> {
+        println!("handling side effect {:?} retries {}", msg, retries);
+        Ok(())
     }
 }
 
@@ -223,9 +307,6 @@ impl Aggregate for Account {
     /// The type of Domain Events that interest this Aggregate.
     /// Usually, this type should be an `enum`.
     type DomainEvent = AccountEvent;
-
-    /// The type used to uniquely identify the a given domain event.
-    type DomainEventId = Uuid;
 
     /// The error type that can be returned by [`Aggregate::apply`] when
     /// mutating the Aggregate state.
@@ -303,13 +384,21 @@ impl Aggregate for Account {
     }
 }
 
-async fn get_repository() -> PostgresRepository {
+// Using the default outbox implementation
+// You can also implement your own outbox handler by implementing the `SideEffectStorage` trait
+async fn get_repository() -> PostgresRepository<Account, TableOutbox<NoEncryption>, NoEncryption> {
     let connection_options =
         PgConnectOptions::from_str("postgres://postgres:password@localhost/postgres").unwrap();
 
     let pool_options = PoolOptions::default();
 
-    PostgresRepository::new(connection_options, pool_options)
-        .await
-        .unwrap()
+    PostgresRepository::new(
+        connection_options,
+        pool_options,
+        TableConfig::new("events", "snapshots"),
+        TableOutbox::new(NoEncryption),
+        NoEncryption,
+    )
+    .await
+    .unwrap()
 }

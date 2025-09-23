@@ -38,6 +38,26 @@ jobs:
         include:
           - build: stable
             toolchain: stable
+    # Service containers to run with `container-job`
+    services:
+      # Label used to access the service container
+      postgres:
+        # Docker Hub image
+        image: postgres:latest
+        # Provide the password for postgres
+        env:
+          POSTGRES_PASSWORD: password
+          POSTGRES_USER: postgres
+          POSTGRES_DB: postgres
+        # Map port 5432 on the container to 5432 on the host
+        ports:
+          - 5432:5432
+        # Set health checks to wait until postgres has started
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v3
 
@@ -52,6 +72,13 @@ jobs:
         with:
           command: test
           args: --workspace --all-features
+        env:
+          # Use localhost instead of postgres hostname
+          POSTGRES_HOST: localhost
+          # Add database connection details
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: postgres
 
   formatting:
     name: Rustfmt Check

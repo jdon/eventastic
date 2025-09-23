@@ -1,36 +1,82 @@
+//! Repository abstractions for event sourcing persistence.
+//!
+//! This module defines the core persistence traits that concrete implementations
+//! (like `eventastic_postgres`) must implement to support event sourcing operations.
+//!
+//! ## Repository Traits
+//!
+//! ### [`RepositoryReader`]
+//! Provides read-only access to event streams and snapshots. Use for queries,
+//! reporting, or loading aggregates without modification.
+//!
+//! ### [`RepositoryWriter`]  
+//! Extends [`RepositoryReader`] with write operations within a transaction boundary.
+//! Required for any operation that modifies aggregate state or produces side effects.
+//!
+//! ### [`Repository`]
+//! High-level abstraction for simple aggregate loading without explicit
+//! transaction management.
+//!
+//! ## Usage Pattern
+//!
+//! ```rust,ignore
+//! // Begin transaction for write operations
+//! let mut transaction = repository.begin_transaction().await?;
+//! let mut context = transaction.get(&aggregate_id).await?;
+//! context.record_that(event)?;
+//! transaction.store(&mut context).await?;
+//! transaction.commit().await?;
+//! ```
+//!
+//! For the complete event sourcing workflow, see [`crate::event`] and [`crate::aggregate`].
+//!
 use async_trait::async_trait;
-use futures::TryStreamExt;
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use futures::Stream;
 use std::fmt::Debug;
 
 use crate::{
     aggregate::{Aggregate, Context},
-    event::{EventStoreEvent, Stream},
+    event::{DomainEvent, EventStoreEvent},
 };
 
-/// List of possible errors that can be returned by the [`RepositoryTransaction`] trait.
+/// List of possible errors that can be returned by the [`RepositoryWriter`] trait.
+///
+/// Each error type represents a specific failure scenario that can occur during
+/// repository operations. Understanding these errors is crucial for implementing
+/// proper error handling and recovery strategies.
 #[derive(Debug, thiserror::Error)]
 pub enum RepositoryError<E, EventId, DE> {
-    /// This error is returned by [`RepositoryTransaction::get`] when the
-    /// desired Aggregate could not be found in the data store.
+    /// This error is returned by [`RepositoryWriter`] methods when the
+    /// desired [`Aggregate`] could not be found in the data store.
     #[error("Aggregate was not found")]
     AggregateNotFound,
 
-    /// This error is returned by [`RepositoryTransaction::get`] when
-    /// the desired [Aggregate] returns an error while applying a Domain Event
+    /// This error is returned by [`RepositoryWriter`] methods when
+    /// the desired [`Aggregate`] returns an error while applying a Domain Event.
     ///
-    /// This usually implies the Event contains corrupted or invalid data.
+    /// ## When this occurs:
+    /// - Event contains corrupted or invalid data
+    /// - Event violates business rules or invariants
+    /// - Schema evolution issues where old events can't be applied to new aggregates
+    /// - Serialization/deserialization failures
     #[error("Failed to apply events to aggregate from event stream. Event Id: {0} caused: {1}")]
     Apply(EventId, #[source] E),
 
-    /// This error is returned when the [`RepositoryTransaction::get`] returns
+    /// This error is returned when [`RepositoryWriter`] methods return
     /// an unexpected error while streaming back the Aggregate's Event Stream.
+    ///
+    /// ## When this occurs:
+    /// - Database connection failures
+    /// - Network connectivity issues
+    /// - Serialization/deserialization errors
+    /// - Database query failures
+    /// - Transaction isolation issues
     #[error("Event store failed while streaming events: {0}")]
     Repository(#[from] DE),
 }
 
-/// A snap of the [`Aggregate`] that is persisted in the db.
-#[derive(Serialize, Deserialize, Debug, Clone)]
+/// A snapshot of the [`Aggregate`] that is persisted in the db.
+#[derive(Debug, Clone)]
 pub struct Snapshot<T>
 where
     T: Aggregate,
@@ -40,35 +86,15 @@ where
     pub snapshot_version: u64,
 }
 
-impl<T> Snapshot<T>
-where
-    T: Aggregate,
-{
-    pub fn id(&self) -> &T::AggregateId {
-        self.aggregate.aggregate_id()
-    }
-}
-
-/// A RepositoryTransaction is an object that allows to load and save
-/// an [`Aggregate`] from and to a persistent data store
+/// A RepositoryReader provides read-only access to aggregate data.
+///
+/// This trait defines the interface for reading events and snapshots from the event store.
+/// It can be implemented by both transactional and non-transactional repository
+/// implementations to enable efficient read operations without requiring write access.
 #[async_trait]
-pub trait RepositoryTransaction<T>
-where
-    T: Aggregate,
-    T::AggregateId: Clone + Send + Sync,
-    T::ApplyError: Debug,
-    Self: Sized + Send + Sync,
-{
-    /// The error type returned by the Store during a [`RepositoryTransaction::stream`] and [`RepositoryTransaction::append`] call.
-    type DbError: Send + Sync;
-
-    /// Opens an Event Stream, effectively streaming all Domain Events
-    /// of an Event Stream back in the application.
-    #[doc(hidden)]
-    fn stream(
-        &mut self,
-        id: &T::AggregateId,
-    ) -> Stream<T::DomainEventId, T::DomainEvent, Self::DbError>;
+pub trait RepositoryReader<T: Aggregate> {
+    /// The error type returned by the Store during repository operations.
+    type DbError;
 
     /// Opens an Event Stream, effectively streaming all Domain Events
     /// of an Event Stream back in the application from a specific version.
@@ -77,132 +103,76 @@ where
         &mut self,
         id: &T::AggregateId,
         version: u64,
-    ) -> Stream<T::DomainEventId, T::DomainEvent, Self::DbError>;
+    ) -> impl Stream<Item = Result<EventStoreEvent<T::DomainEvent>, Self::DbError>>;
 
-    // Get a specific event from the event store.
+    /// Get a specific event from the event store by its ID.
     #[doc(hidden)]
     async fn get_event(
         &mut self,
         aggregate_id: &T::AggregateId,
-        event_id: &T::DomainEventId,
-    ) -> Result<
-        Option<EventStoreEvent<T::DomainEventId, <T as Aggregate>::DomainEvent>>,
-        Self::DbError,
-    >;
+        event_id: &<<T as Aggregate>::DomainEvent as DomainEvent>::EventId,
+    ) -> Result<Option<EventStoreEvent<T::DomainEvent>>, Self::DbError>;
 
-    /// Appends a new Domain Events to the specified Event Stream.
+    /// Retrieves the latest snapshot of the Aggregate from the Event Store.
+    /// This method must check that the snapshot version matches the expected
+    /// [`Aggregate::SNAPSHOT_VERSION`] to ensure compatibility.
+    #[doc(hidden)]
+    async fn get_snapshot(
+        &mut self,
+        id: &T::AggregateId,
+    ) -> Result<Option<Snapshot<T>>, Self::DbError>;
+}
+
+/// A RepositoryTransaction provides transactional access to aggregate persistence.
+///
+/// This trait extends [`RepositoryReader`] to provide write operations within a transaction
+/// boundary. All write operations in event sourcing must be performed within a transaction
+/// to ensure consistency between events, snapshots, and side effects.
+#[async_trait]
+pub trait RepositoryWriter<T: Aggregate>: RepositoryReader<T> {
+    /// Appends new Domain Events to the specified Event Stream.
     ///
-    /// The result of this operation is the new [Version] of the Event Stream
-    /// with the specified Domain Events added to it.
+    /// Returns a list of the Domain Event Ids that were successfully stored.
     #[doc(hidden)]
-    async fn append(
+    async fn store_events(
         &mut self,
         id: &T::AggregateId,
-        events: Vec<EventStoreEvent<T::DomainEventId, T::DomainEvent>>,
+        events: Vec<EventStoreEvent<T::DomainEvent>>,
+    ) -> Result<Vec<<<T as Aggregate>::DomainEvent as DomainEvent>::EventId>, Self::DbError>;
+
+    /// Stores a snapshot of the aggregate state to optimize future loading.
+    #[doc(hidden)]
+    async fn store_snapshot(&mut self, snapshot: Snapshot<T>) -> Result<(), Self::DbError>;
+
+    /// Insert side effects into the repository
+    #[doc(hidden)]
+    async fn store_side_effects(
+        &mut self,
+        side_effects: Vec<T::SideEffect>,
     ) -> Result<(), Self::DbError>;
+}
 
-    #[doc(hidden)]
-    async fn get_snapshot(&mut self, id: &T::AggregateId) -> Option<Snapshot<T>>
-    where
-        T: DeserializeOwned;
+/// A Repository provides high-level operations for loading
+/// [`Aggregate`] instances without requiring explicit transaction management.
+///
+/// This trait is intended for simpler use cases where automatic transaction
+/// handling is preferred over manual transaction control.
+#[async_trait]
+pub trait Repository<T: Aggregate> {
+    /// The error type returned by the Repository during operations.
+    type Error;
 
-    #[doc(hidden)]
-    async fn store_snapshot(&mut self, snapshot: Snapshot<T>) -> Result<(), Self::DbError>
-    where
-        T: Serialize;
-
-    /// Loads an Aggregate Root instance from the data store,
-    /// referenced by its unique identifier.
-    async fn get(
-        &mut self,
-        id: &T::AggregateId,
-    ) -> Result<Context<T>, RepositoryError<T::ApplyError, T::DomainEventId, Self::DbError>>
-    where
-        T: DeserializeOwned,
-    {
-        let snapshot = self.get_snapshot(id).await;
-
-        let (context, version) = if let Some(snapshot) = snapshot {
-            if snapshot.snapshot_version == T::SNAPSHOT_VERSION {
-                // Snapshot is valid so return it
-                let context: Context<T> = snapshot.into();
-                // We want to get the next event in the stream
-                let version = context.version() + 1;
-                (Some(context), version)
-            } else {
-                (None, 0)
-            }
-        } else {
-            (None, 0)
-        };
-
-        let ctx = self
-            .stream_from(id, version)
-            .map_err(RepositoryError::Repository)
-            .try_fold(context, |ctx: Option<Context<T>>, event| async move {
-                let new_ctx_result = match ctx {
-                    None => Context::rehydrate_from(&event),
-                    Some(ctx) => ctx.apply_rehydrated_event(&event),
-                };
-
-                let new_ctx = new_ctx_result.map_err(|e| RepositoryError::Apply(event.id, e))?;
-
-                Ok(Some(new_ctx))
-            })
-            .await?;
-
-        ctx.ok_or(RepositoryError::AggregateNotFound)
-    }
-
-    /// Stores a new version of an Aggregate Root instance to the data store.
-    async fn store(
-        &mut self,
-        root: &mut Context<T>,
-    ) -> Result<(), RepositoryError<T::ApplyError, T::DomainEventId, Self::DbError>>
-    where
-        T: Serialize,
-        T::SideEffect: Serialize,
-    {
-        let events_to_commit = root.take_uncommitted_events();
-
-        if events_to_commit.is_empty() {
-            return Ok(());
-        }
-
-        let side_effects_to_commit = root.take_uncommitted_side_effects();
-
-        let aggregate_id = root.aggregate_id();
-
-        let snapshot_version = root.snapshot_version();
-        let snapshot_to_store = root.state();
-
-        let snapshot = Snapshot {
-            snapshot_version,
-            aggregate: snapshot_to_store.clone(),
-            version: root.version(),
-        };
-
-        self.append(aggregate_id, events_to_commit)
-            .await
-            .map_err(RepositoryError::Repository)?;
-
-        self.store_snapshot(snapshot)
-            .await
-            .map_err(RepositoryError::Repository)?;
-
-        self.insert_side_effects(side_effects_to_commit).await?;
-
-        Ok(())
-    }
-
-    /// Insert side effects in to the repository
-    #[doc(hidden)]
-    async fn insert_side_effects(
-        &mut self,
-        outbox_item: Vec<T::SideEffect>,
-    ) -> Result<(), Self::DbError>
-    where
-        T::SideEffect: Serialize;
-
-    async fn commit(self) -> Result<(), Self::DbError>;
+    /// Loads an aggregate from the repository by its ID.
+    ///
+    /// This method automatically handles transaction management and will
+    /// load the latest state of the aggregate by replaying its event stream.
+    /// If a snapshot is available, it will be used to optimize the loading process.
+    ///
+    /// # Errors
+    ///
+    /// Returns repository-specific errors which may include:
+    /// - Aggregate not found errors
+    /// - Database connection errors  
+    /// - Event application errors
+    async fn load(&self, aggregate_id: &T::AggregateId) -> Result<Context<T>, Self::Error>;
 }

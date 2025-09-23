@@ -1,6 +1,15 @@
 [workspace]
 resolver = "2"
-members = ["eventastic", "eventastic_postgres", "examples/*"]
+members = [
+	"eventastic",
+	"eventastic_outbox_postgres",
+	"eventastic_postgres",
+	"examples/*",
+]
+
+[workspace.package]
+license = "MIT"
+license-file = "LICENSE"
 
 [workspace.dependencies]
 # Eventastic dependencies
@@ -10,6 +19,7 @@ serde = { version = "1", features = ["derive"] }
 thiserror = "1"
 
 # Eventastic postgres dependencies
+async-stream = "0.3.6"
 sqlx = { version = "0.8", features = [
 	"runtime-tokio-rustls",
 	"postgres",
@@ -22,5 +32,4 @@ uuid = { version = "1", features = ["v4", "serde"] }
 chrono = "0.4"
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
-futures-util = "0.3"
-anyhow = "1"
+futures-util = "0.3.31"

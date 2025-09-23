@@ -1,0 +1,15 @@
+[package]
+name = "eventastic_outbox_postgres"
+version = "0.5.0"
+edition = "2024"
+
+[dependencies]
+eventastic_postgres = { version = "0.5", path = "../eventastic_postgres" }
+async-trait = { workspace = true }
+sqlx = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+eventastic = { path = "../eventastic", version = "0.5" }
+futures-util = { workspace = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }

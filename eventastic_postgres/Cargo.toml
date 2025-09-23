@@ -1,23 +1,31 @@
 [package]
 name = "eventastic_postgres"
-version = "0.4.0"
-edition = "2021"
+version = "0.5.0"
+edition = "2024"
 license = "MIT"
 readme = "../README.md"
 repository = "https://github.com/jdon/eventastic"
-description = "An example postgres event store for eventastic"
+description = "A postgres event store for eventastic"
 categories = ["web-programming", "asynchronous"]
 keywords = ["postgres", "postgresql", "database", "ddd", "event-sourcing"]
 
 [dependencies]
-chrono = { workspace = true }
-eventastic = { path = "../eventastic", version = "0.4" }
-sqlx = { workspace = true }
-serde_json = { workspace = true }
-tokio = { workspace = true }
 async-trait = { workspace = true }
+async-stream = { workspace = true }
+chrono = { workspace = true }
+eventastic = { path = "../eventastic", version = "0.5" }
 futures = { workspace = true }
 futures-util = { workspace = true }
-serde = { workspace = true }
-anyhow = { workspace = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+sqlx = { workspace = true }
 thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+eventastic_outbox_postgres = { path = "../eventastic_outbox_postgres" }
+uuid = { workspace = true }
+
+[features]
+default = []
+serde = ["dep:serde", "dep:serde_json"]
