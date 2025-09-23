@@ -17,7 +17,10 @@ A type-safe event sourcing and CQRS library for Rust with PostgreSQL persistence
 Define your domain aggregate and events:
 
 ```rust
-use eventastic::prelude::*;
+use eventastic::aggregate::{Aggregate, Context, Root, SideEffect};
+use eventastic::event::DomainEvent;
+use eventastic::memory::InMemoryRepository;
+use eventastic::repository::Repository;
 
 #[derive(Clone, Debug)]
 struct BankAccount {
@@ -43,12 +46,23 @@ impl DomainEvent for AccountEvent {
     }
 }
 
+// Define a no-op side effect type
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct NoSideEffect;
+
+impl SideEffect for NoSideEffect {
+    type SideEffectId = String;
+    fn id(&self) -> &Self::SideEffectId {
+        unreachable!("No side effects are produced")
+    }
+}
+
 impl Aggregate for BankAccount {
     const SNAPSHOT_VERSION: u64 = 1;
     type AggregateId = String;
     type DomainEvent = AccountEvent;
     type ApplyError = String;
-    type SideEffect = (); // No side effects for this example
+    type SideEffect = NoSideEffect;
 
     fn aggregate_id(&self) -> &Self::AggregateId {
         &self.id
@@ -93,18 +107,18 @@ impl Aggregate for BankAccount {
 Use the aggregate with transactions:
 
 ```rust
-use eventastic::memory::InMemoryRepository;
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let repository = InMemoryRepository::<BankAccount>::new();
 
-    // Create new account
-    let mut account = BankAccount::record_new(AccountEvent::Opened {
-        event_id: "evt-1".to_string(),
-        account_id: "acc-123".to_string(),
-        initial_balance: 1000,
-    })?;
+    // Create new account using the Root trait
+    let mut account: Context<BankAccount> = BankAccount::record_new(
+        AccountEvent::Opened {
+            event_id: "evt-1".to_string(),
+            account_id: "acc-123".to_string(),
+            initial_balance: 1000,
+        }
+    )?;
 
     // Deposit money
     account.record_that(AccountEvent::Deposited {
@@ -164,19 +178,22 @@ Eventastic includes features needed for production systems:
 
 ## Persistence
 
-The library provides two repository implementations:
+The library provides multiple repository implementations:
 
 - `eventastic::memory::InMemoryRepository` - For testing and development
-- `eventastic_postgres::PostgresRepository` - For production PostgreSQL storage
-
-The PostgreSQL implementation includes:
-
-- Event and snapshot storage
-- Transaction support
-- Outbox pattern for side effects
+- `eventastic_postgres::PostgresRepository` - For production PostgreSQL storage with:
+  - Event and snapshot storage with versioning
+  - Full transaction support with optimistic concurrency control
+  - Optional encryption for sensitive data
+  - Database migrations support
+- `eventastic_outbox_postgres::TableOutbox` - Transactional outbox pattern for reliable side effect processing
 
 ## Examples
 
 See the `examples/` directory for complete implementations:
 
-- **Bank** - Full banking domain with accounts and transfers
+- **Bank** - Full banking domain demonstrating:
+  - Account creation and management
+  - Transaction processing
+  - Side effects via outbox pattern
+  - Idempotency and concurrency handling
